@@ -206,7 +206,14 @@ export class BitcoinEsploraApiProvider {
       queue = new Mutex();
       scanQueues.set(base, queue);
     }
-    const scan = queue.runExclusive(() => this.httpGet<UTXO[]>(path)).finally(() => pendingScans.delete(key));
+    const read = () => this.httpGet<UTXO[]>(path);
+    const scan = queue
+      .runExclusive(() => {
+        // Extension pages and their service worker share an origin, but not the in-memory queue.
+        const locks = globalThis.navigator?.locks;
+        return locks ? locks.request(`sandcastle:regtest-scan:${base}`, read) : read();
+      })
+      .finally(() => pendingScans.delete(key));
     pendingScans.set(key, scan);
     return scan;
   }
