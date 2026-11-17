@@ -11,7 +11,13 @@ export class RegtestApiConfigurationError extends Error {
 
 export function regtestApiUrl(value: string | undefined, endpoint: 'bitcoin' | 'ord'): string {
   try {
-    const url = new URL(value?.trim() ?? '');
+    const input = value?.trim() ?? '';
+    const absolute = /^[a-z][a-z\d+.-]*:\/\//i.test(input) ? input : `http://${input}`;
+    const authority = absolute.split('://', 2)[1]?.split('/', 1)[0] ?? '';
+    if (!authority || authority.endsWith(':') || authority.includes('@') || /[?#\\]/.test(input)) {
+      throw new RegtestApiConfigurationError(endpoint);
+    }
+    const url = new URL(absolute);
     const hosted = /(^|\.)(xverse\.app|mempool\.space|sbtc-mempool\.tech|hiro\.so|gamma\.io|ordinals\.com)\.?$/i;
     if (
       (url.protocol === 'http:' || url.protocol === 'https:') &&

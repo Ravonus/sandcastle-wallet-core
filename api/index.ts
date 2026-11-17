@@ -3,7 +3,7 @@ export * from './esplora/esploraAPiProvider';
 export * from './gamma';
 export { getNetworkURL, parseStxTransactionData } from './helper';
 export { default as mempoolApi, getRecommendedFees, getRegtestBtcFeeRate } from './mempool';
-export { RegtestApiConfigurationError } from './regtest';
+export { RegtestApiConfigurationError, regtestApiUrl } from './regtest';
 export * from './ordinals';
 export * from './ordinals/provider';
 export * from './ordinals/regtest';
