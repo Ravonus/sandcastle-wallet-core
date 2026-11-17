@@ -2,14 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 import mempool from '../../api/mempool';
 
-vi.mock('axios');
+vi.mock('axios', async (importOriginal) => {
+  const { default: actual } = await importOriginal<typeof import('axios')>();
+  return { default: { ...actual, get: vi.fn() } };
+});
 
 describe('Mempool fees url', () => {
   beforeEach(() => {
-    axios.get.mockReset();
+    vi.mocked(axios.get).mockReset();
   });
   it('mainnet', async () => {
-    axios.get.mockResolvedValue({
+    vi.mocked(axios.get).mockResolvedValue({
       data: {
         fastestFee: 1,
         halfHourFee: 2,
@@ -23,7 +26,7 @@ describe('Mempool fees url', () => {
   });
 
   it('signet', async () => {
-    axios.get.mockResolvedValue({
+    vi.mocked(axios.get).mockResolvedValue({
       data: {
         fastestFee: 1,
         halfHourFee: 2,
@@ -37,7 +40,7 @@ describe('Mempool fees url', () => {
   });
 
   it('testnet', async () => {
-    axios.get.mockResolvedValue({
+    vi.mocked(axios.get).mockResolvedValue({
       data: {
         fastestFee: 1,
         halfHourFee: 2,
@@ -49,17 +52,8 @@ describe('Mempool fees url', () => {
     expect(axios.get).toHaveBeenCalledWith('https://mempool.space/testnet/api/v1/fees/recommended');
   });
 
-  it('regtest', async () => {
-    axios.get.mockResolvedValue({
-      data: {
-        fastestFee: 1,
-        halfHourFee: 2,
-        hourFee: 3,
-      },
-    });
-
-    const r = await mempool.getRecommendedFees('Regtest');
-    console.log(r);
-    expect(axios.get).toHaveBeenCalledWith('https://beta.sbtc-mempool.tech/api/proxy/fees/recommended');
+  it('requires an explicit Regtest endpoint', async () => {
+    await expect(mempool.getRecommendedFees('Regtest')).rejects.toMatchObject({ code: 'REGTEST_API_NOT_CONFIGURED' });
+    expect(axios.get).not.toHaveBeenCalled();
   });
 });

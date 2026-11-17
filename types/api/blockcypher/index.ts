@@ -93,6 +93,7 @@ export interface BtcBalance {
 
 export interface BtcAddressBalanceResponse {
   address: string;
+  historyAvailable?: false;
   chain_stats: {
     funded_txo_count: number;
     funded_txo_sum: number;

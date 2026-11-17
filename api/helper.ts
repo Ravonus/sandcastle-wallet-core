@@ -32,7 +32,7 @@ export function sumOutputsForAddress(outputs: Vout[], address: string): number {
 export function sumInputsForAddress(inputs: Vin[], address: string): number {
   let total = 0;
   inputs.forEach((input) => {
-    if (input.prevout.scriptpubkey_address === address) {
+    if (input.prevout?.scriptpubkey_address === address) {
       total += input.prevout.value;
     }
   });
@@ -45,7 +45,7 @@ export function parseOrdinalsBtcTransactions(
 ): BtcTransactionData {
   const inputAddresses: string[] = [];
   responseTx.vin.forEach((input) => {
-    if (input.prevout.scriptpubkey_address) {
+    if (input.prevout?.scriptpubkey_address) {
       inputAddresses.push(input.prevout.scriptpubkey_address);
     }
   });
@@ -67,7 +67,7 @@ export function parseOrdinalsBtcTransactions(
     amount = inputAmount - changeAmount;
   }
 
-  const total = responseTx.fee + amount;
+  const total = (responseTx.fee ?? 0) + amount;
 
   const date = new Date(0);
   if (responseTx.status.block_time) date.setUTCSeconds(responseTx.status.block_time);
@@ -101,7 +101,7 @@ export function parseBtcTransactionData(
 ): BtcTransactionData {
   const inputAddresses: string[] = [];
   responseTx.vin.forEach((input) => {
-    if (input.prevout.scriptpubkey_address) {
+    if (input.prevout?.scriptpubkey_address) {
       inputAddresses.push(input.prevout.scriptpubkey_address);
     }
   });
@@ -131,7 +131,7 @@ export function parseBtcTransactionData(
     amount = inputAmount - changeAmount;
   }
 
-  const total = responseTx.fee + amount;
+  const total = (responseTx.fee ?? 0) + amount;
   const date = new Date(0);
   if (responseTx.status.block_time) date.setUTCSeconds(responseTx.status.block_time);
 

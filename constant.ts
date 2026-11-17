@@ -35,12 +35,10 @@ export const XVERSE_BTC_BASE_URI_MAINNET = 'https://btc-1.xverse.app';
 export const XVERSE_BTC_BASE_URI_TESTNET = 'https://btc-testnet.xverse.app';
 export const XVERSE_BTC_BASE_URI_TESTNET4 = 'https://btc-testnet4.xverse.app';
 export const XVERSE_BTC_BASE_URI_SIGNET = 'https://btc-signet.xverse.app';
-export const XVERSE_BTC_BASE_URI_REGTEST = 'https://beta.sbtc-mempool.tech/api/proxy';
 export const BTC_BASE_URI_MAINNET = 'https://mempool.space/api';
 export const BTC_BASE_URI_TESTNET = 'https://mempool.space/testnet/api';
 export const BTC_BASE_URI_TESTNET4 = 'https://mempool.space/testnet4/api';
 export const BTC_BASE_URI_SIGNET = 'https://mempool.space/signet/api';
-export const BTC_BASE_URI_REGTEST = 'https://beta.sbtc-mempool.tech/api/proxy';
 
 // STX
 export const HIRO_MAINNET_DEFAULT = 'https://api.hiro.so';
@@ -74,9 +72,10 @@ export const defaultSignet: SettingsNetwork = {
 };
 export const defaultRegtest: SettingsNetwork = {
   type: 'Regtest',
-  address: HIRO_TESTNET_DEFAULT,
-  btcApiUrl: XVERSE_BTC_BASE_URI_REGTEST,
-  fallbackBtcApiUrl: BTC_BASE_URI_REGTEST,
+  address: '',
+  btcApiUrl: '',
+  fallbackBtcApiUrl: '',
+  ordApiUrl: '',
 };
 export const initialNetworksList: SettingsNetwork[] = [
   { ...defaultMainnet },
@@ -98,8 +97,6 @@ const xverseApiNetworkSuffix = (network: NetworkType, mainnetOverride = '') => {
       return '-testnet4';
     case 'Signet':
       return '-signet';
-    case 'Regtest':
-      return '-signet'; // prefer signet xverse api as fees are too high on testnet
     default:
       throw new Error('Invalid network');
   }

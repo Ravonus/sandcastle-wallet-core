@@ -10,6 +10,7 @@
     "clean": "rimraf dist",
     "build:esm": "npm run clean && tsc -p ./tsconfig.build.json",
     "build:esm:watch": "npm run clean && tsc --watch -p ./tsconfig.build.json",
+    "ts-check": "tsc -p tsconfig.build.json --noEmit --incremental false",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "lint": "eslint .",
