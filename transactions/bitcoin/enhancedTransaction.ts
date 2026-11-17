@@ -147,7 +147,7 @@ export class EnhancedTransaction {
 
       let inscriptions: IOInscription[] = [];
       let satributes: IOSatribute[] = [];
-      if (isInscriptionsAndRunesCompatible(this._context.network)) {
+      if (this._context.network === 'Regtest' || isInscriptionsAndRunesCompatible(this._context.network)) {
         const result = await extractOutputInscriptionsAndSatributes(inputs, currentOffset, amount);
         inscriptions = result.inscriptions;
         satributes = result.satributes;
@@ -160,8 +160,10 @@ export class EnhancedTransaction {
     }
 
     // extract rune script data via API if valid runes script exists
-    const runesClient = getRunesClient(this._context.network);
-    const runeOp = scriptOutputs.length > 0 ? await runesClient.getDecodedRuneScript(transaction.hex) : undefined;
+    const runeOp =
+      scriptOutputs.length > 0 && isInscriptionsAndRunesCompatible(this._context.network)
+        ? await getRunesClient(this._context.network).getDecodedRuneScript(transaction.hex)
+        : undefined;
 
     // we know there is at least the dummy fee output which we added above
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion

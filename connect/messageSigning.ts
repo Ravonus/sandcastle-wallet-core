@@ -2,12 +2,12 @@ import * as secp256k1 from '@noble/secp256k1';
 import { hex } from '@scure/base';
 import * as btc from '@scure/btc-signer';
 import * as bip39 from 'bip39';
-import { AddressType, getAddressInfo } from 'bitcoin-address-validation';
+import { AddressType } from 'bitcoin-address-validation';
 import { crypto } from 'bitcoinjs-lib';
 import { magicHash, signAsync } from 'bitcoinjs-message';
 import { encode } from 'varuint-bitcoin';
 import { getNativeSegwitDerivationPath, getNestedSegwitDerivationPath, getTaprootDerivationPath } from '../account';
-import { BitcoinNetwork, getBtcNetwork } from '../transactions/btcNetwork';
+import { BitcoinNetwork, getBitcoinAddressType, getBtcNetwork } from '../transactions/btcNetwork';
 import { Account, MessageSigningProtocols, NetworkType, SignedMessage } from '../types';
 import { bip32 } from '../utils/bip32';
 
@@ -151,8 +151,7 @@ export const signMessageBip322 = async ({
 };
 
 function getSigningDerivationPath(accounts: Array<Account>, address: string, network: NetworkType): string {
-  // TODO: switch to btc.Address.decode
-  const { type } = getAddressInfo(address);
+  const type = getBitcoinAddressType(address, network);
 
   if (accounts.length <= 0) {
     throw new Error('Invalid accounts list');
@@ -211,8 +210,7 @@ export const signMessage = async ({
   if (!accounts?.length) {
     throw new Error('a List of Accounts are required to derive the correct Private Key');
   }
-  // TODO: switch to btc.Address.decode
-  const { type } = getAddressInfo(address);
+  const type = getBitcoinAddressType(address, network);
   const seed = await bip39.mnemonicToSeed(seedPhrase);
   const master = bip32.fromSeed(seed);
   const signingDerivationPath = getSigningDerivationPath(accounts, address, network);

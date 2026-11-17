@@ -1,6 +1,10 @@
 import Bitcoin from '@keystonehq/hw-app-bitcoin';
 import { base64, hex } from '@scure/base';
 import * as btc from '@scure/btc-signer';
+import { tapLeafHash } from '@scure/btc-signer/payment';
+import { TransactionInput } from '@scure/btc-signer/psbt';
+import { tagSchnorr, taprootTweakPubkey } from '@scure/btc-signer/utils';
+import { getPrevOut } from '@scure/btc-signer/utxo';
 import { Mutex } from 'async-mutex';
 import { isAxiosError } from 'axios';
 import * as bip39 from 'bip39';
@@ -16,6 +20,7 @@ import { AccountType, type NetworkType, type UTXO } from '../../types';
 import { bip32 } from '../../utils/bip32';
 import { getBtcNetworkDefinition } from '../btcNetwork';
 import { ExtendedUtxo } from './extendedUtxo';
+import { appendPsbtSignatures } from './psbtSignatures';
 import { CompilationOptions, SupportedAddressType } from './types';
 import { areByteArraysEqual } from './utils';
 
@@ -23,6 +28,7 @@ export type InputToSign = {
   address: string;
   signingIndexes: Array<number>;
   sigHash?: number;
+  sighashTypes?: number[];
 };
 
 export type SignOptions = {
@@ -105,6 +111,10 @@ export abstract class AddressContext {
 
   async getCommonUtxos(): Promise<ExtendedUtxo[]> {
     const utxos = await this.getUtxos();
+    if (this._network === 'Regtest') {
+      const eligible = await Promise.all(utxos.map((utxo) => utxo.isRegtestFeeEligible()));
+      return utxos.filter((_, index) => eligible[index]);
+    }
 
     const commonUtxos: ExtendedUtxo[] = [];
 
@@ -143,7 +153,10 @@ export abstract class AddressContext {
   async getExternalUtxo(outPoint: string): Promise<ExtendedUtxo | undefined> {
     const [txid, vout] = outPoint.split(':');
     const tx = await this._esploraApiProvider.getTransaction(txid).catch((e) => {
-      if (isAxiosError(e) && e.response && e.response.status === 404) {
+      if (
+        isAxiosError(e) &&
+        (e.response?.status === 404 || (this._network === 'Regtest' && e.response?.status === 500))
+      ) {
         return undefined;
       }
       throw e;
@@ -153,21 +166,19 @@ export abstract class AddressContext {
       return undefined;
     }
 
-    const outspends = await this._esploraApiProvider.getTransactionOutspends(txid);
+    const output = tx.vout[+vout];
+    if (!output) return undefined;
 
-    if (!outspends) {
-      return undefined;
-    }
-
-    const outspend = outspends[+vout];
-    if (outspend?.spent) {
+    const outspend =
+      this._network === 'Regtest'
+        ? await this._esploraApiProvider.getTransactionOutspend(txid, +vout)
+        : (await this._esploraApiProvider.getTransactionOutspends(txid))?.[+vout];
+    if (!outspend || outspend.spent) {
       // this is no longer a UTXO as it is spent
       return undefined;
     }
 
-    const output = tx.vout[+vout];
-
-    const address = output.scriptpubkey_address!;
+    const address = output.scriptpubkey_address ?? '';
 
     const utxo: UTXO = {
       txid,
@@ -211,15 +222,16 @@ export abstract class AddressContext {
       for (const inputToSign of options.inputsToSign) {
         if (inputToSign.address === this._address) {
           inputToSign.signingIndexes.forEach((index) => {
-            if (signIndexes[index]) {
+            if (index in signIndexes) {
               throw new Error(`Duplicate signing index ${index} for address ${this._address}`);
             }
             const input = transaction.getInput(index);
-
-            signIndexes[index] = undefined;
-            if (input.sighashType !== undefined) {
-              signIndexes[index] = [input.sighashType];
+            const effectiveSighash =
+              input.sighashType ?? (this.type === 'p2tr' ? btc.SigHash.DEFAULT : btc.SigHash.ALL);
+            if (inputToSign.sighashTypes && !inputToSign.sighashTypes.includes(effectiveSighash)) {
+              throw new Error(`Sighash ${effectiveSighash} is not allowed for PSBT input ${index}`);
             }
+            signIndexes[index] = [effectiveSighash];
           });
         }
       }
@@ -307,13 +319,26 @@ export class P2shAddressContext extends AddressContext {
   }
 
   async signInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
-    const seedPhrase = await this._seedVault.getSeed();
-    const privateKey = await this.getPrivateKey(seedPhrase);
-
     const signIndexes = this.getSignIndexes(transaction, options, this._p2sh.script);
+    if (!Object.keys(signIndexes).length) return;
+    const seedPhrase = await this._seedVault.getSeed();
+    const privateKey = hex.decode(await this.getPrivateKey(seedPhrase));
 
     for (const [i, allowedSigHash] of Object.entries(signIndexes)) {
-      transaction.signIdx(hex.decode(privateKey), +i, allowedSigHash);
+      const index = +i;
+      const input = transaction.getInput(index);
+      if (this._network === 'Regtest' && options.inputsToSign) {
+        if (
+          !(
+            areByteArraysEqual(getPrevOut(input)?.script, this._p2sh.script) &&
+            areByteArraysEqual(input.redeemScript, this._p2sh.redeemScript)
+          )
+        ) {
+          throw new Error(`PSBT input ${index} does not match the selected payment address`);
+        }
+        if (input.partialSig?.some(([pubKey]) => hex.encode(pubKey) === this._publicKey.toLowerCase())) continue;
+      }
+      transaction.signIdx(privateKey, index, allowedSigHash);
     }
   }
 
@@ -352,13 +377,21 @@ export class P2wpkhAddressContext extends AddressContext {
   }
 
   async signInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
-    const seedPhrase = await this._seedVault.getSeed();
-    const privateKey = await this.getPrivateKey(seedPhrase);
-
     const signIndexes = this.getSignIndexes(transaction, options, this._p2wpkh.script);
+    if (!Object.keys(signIndexes).length) return;
+    const seedPhrase = await this._seedVault.getSeed();
+    const privateKey = hex.decode(await this.getPrivateKey(seedPhrase));
 
     for (const [i, allowedSigHash] of Object.entries(signIndexes)) {
-      transaction.signIdx(hex.decode(privateKey), +i, allowedSigHash);
+      const index = +i;
+      const input = transaction.getInput(index);
+      if (this._network === 'Regtest' && options.inputsToSign) {
+        if (!areByteArraysEqual(getPrevOut(input)?.script, this._p2wpkh.script)) {
+          throw new Error(`PSBT input ${index} does not match the selected payment address`);
+        }
+        if (input.partialSig?.some(([pubKey]) => hex.encode(pubKey) === this._publicKey.toLowerCase())) continue;
+      }
+      transaction.signIdx(privateKey, index, allowedSigHash);
     }
   }
 
@@ -570,14 +603,99 @@ export class P2trAddressContext extends AddressContext {
   }
 
   async signInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
-    const seedPhrase = await this._seedVault.getSeed();
-    const privateKey = await this.getPrivateKey(seedPhrase);
-
     const signIndexes = this.getSignIndexes(transaction, options, this._p2tr.script);
+    if (!Object.keys(signIndexes).length) return;
+    const seedPhrase = await this._seedVault.getSeed();
+    const privateKey = hex.decode(await this.getPrivateKey(seedPhrase));
 
     for (const [i, allowedSigHash] of Object.entries(signIndexes)) {
-      transaction.signIdx(hex.decode(privateKey), +i, allowedSigHash);
+      const index = +i;
+      if (this._network === 'Regtest' && options.inputsToSign) {
+        this.signRegtestInput(transaction, index, privateKey, allowedSigHash);
+      } else {
+        transaction.signIdx(privateKey, index, allowedSigHash);
+      }
     }
+  }
+
+  private signRegtestInput(
+    transaction: btc.Transaction,
+    index: number,
+    privateKey: Uint8Array,
+    allowedSigHash: btc.SigHash[] | undefined,
+  ) {
+    const input = transaction.getInput(index);
+    const prevout = getPrevOut(input);
+    if (input.tapLeafScript?.length) {
+      const leafHash = this.checkRegtestTapLeaf(input, prevout.script);
+      if (
+        input.tapScriptSig?.some(
+          ([key]) =>
+            areByteArraysEqual(key.pubKey, this._p2tr.tapInternalKey) && areByteArraysEqual(key.leafHash, leafHash),
+        )
+      )
+        return;
+
+      // A script-path request only produces a script signature, even if the input includes internal-key metadata.
+      if (input.tapInternalKey) transaction.updateInput(index, { tapInternalKey: undefined }, true);
+      try {
+        transaction.signIdx(privateKey, index, allowedSigHash);
+      } finally {
+        if (input.tapInternalKey) transaction.updateInput(index, { tapInternalKey: input.tapInternalKey }, true);
+      }
+      return;
+    }
+
+    if (
+      !areByteArraysEqual(prevout?.script, this._p2tr.script) ||
+      input.tapMerkleRoot ||
+      (input.tapInternalKey && !areByteArraysEqual(input.tapInternalKey, this._p2tr.tapInternalKey))
+    ) {
+      throw new Error(`PSBT input ${index} is not a key-path output for the selected Taproot address`);
+    }
+    if (input.tapKeySig) return;
+
+    if (!input.tapInternalKey) transaction.updateInput(index, { tapInternalKey: this._p2tr.tapInternalKey }, true);
+    try {
+      transaction.signIdx(privateKey, index, allowedSigHash);
+    } finally {
+      if (!input.tapInternalKey) transaction.updateInput(index, { tapInternalKey: undefined }, true);
+    }
+  }
+
+  private checkRegtestTapLeaf(input: TransactionInput, prevoutScript: Uint8Array): Uint8Array {
+    const leaves = input.tapLeafScript ?? [];
+    if (leaves.length !== 1) throw new Error('Expected one Taproot signing leaf');
+
+    const [[controlBlock, scriptAndVersion]] = leaves;
+    const script = scriptAndVersion.subarray(0, -1);
+    const version = scriptAndVersion[scriptAndVersion.length - 1];
+    if (version !== 0xc0 || (controlBlock.version & 0xfe) !== version) {
+      throw new Error('Unsupported Taproot signing leaf version');
+    }
+    if (
+      !btc.Script.decode(script).some(
+        (item) => item instanceof Uint8Array && areByteArraysEqual(item, this._p2tr.tapInternalKey),
+      )
+    )
+      throw new Error('Requested Taproot leaf does not contain the selected account key');
+
+    const leafHash = tapLeafHash(script, version);
+    const root = controlBlock.merklePath.reduce(
+      (hash, sibling) =>
+        Buffer.compare(hash, sibling) < 0
+          ? tagSchnorr('TapBranch', hash, sibling)
+          : tagSchnorr('TapBranch', sibling, hash),
+      leafHash,
+    );
+    const [outputKey, parity] = taprootTweakPubkey(controlBlock.internalKey, root);
+    if (
+      (controlBlock.version & 1) !== parity ||
+      !areByteArraysEqual(prevoutScript, btc.OutScript.encode({ type: 'tr', pubkey: outputKey }))
+    ) {
+      throw new Error('Taproot signing leaf does not match the prevout script');
+    }
+    return leafHash;
   }
 
   protected getDerivationPath(): string {
@@ -839,9 +957,7 @@ export class TransactionContext {
     outpoint: string,
   ): Promise<{ extendedUtxo?: ExtendedUtxo; addressContext?: AddressContext } | undefined> {
     const utxoData = await this.getUtxo(outpoint);
-    if (utxoData.extendedUtxo) {
-      return utxoData;
-    }
+    if (utxoData.extendedUtxo) return utxoData;
 
     try {
       const extendedUtxo = await this.paymentAddress.getExternalUtxo(outpoint);
@@ -865,6 +981,7 @@ export class TransactionContext {
         const bundle = await extendedUtxo.getBundleData();
 
         if (
+          bundle?.localInscriptions?.ids.includes(inscriptionId) ||
           bundle?.sat_ranges.some((satRange) =>
             satRange.inscriptions.some((inscription) => inscription.id === inscriptionId),
           )
@@ -897,6 +1014,19 @@ export class TransactionContext {
   }
 
   async signTransaction(transaction: btc.Transaction, options: SignOptions): Promise<void> {
+    if (this._network === 'Regtest' && options.inputsToSign && !options.ledgerTransport && !options.keystoneTransport) {
+      const indexes = new Set<number>();
+      for (const { address, signingIndexes } of options.inputsToSign) {
+        if (!this._addressList.some((context) => context.address === address)) {
+          throw new Error('PSBT signing address is not in the selected account');
+        }
+        for (const index of signingIndexes) {
+          transaction.getInput(index); // Checks integer bounds before any signing.
+          if (indexes.has(index)) throw new Error(`Duplicate PSBT signing index ${index}`);
+          indexes.add(index);
+        }
+      }
+    }
     await this.paymentAddress.prepareInputs(transaction, options);
     await this.ordinalsAddress.prepareInputs(transaction, options);
 
@@ -905,11 +1035,18 @@ export class TransactionContext {
   }
 
   async signPsbt(psbtBase64: string, options: SignOptions): Promise<string> {
-    const txn = btc.Transaction.fromPSBT(Buffer.from(psbtBase64, 'base64'));
+    const original = base64.decode(psbtBase64);
+    const txn = btc.Transaction.fromPSBT(original, {
+      allowUnknownInputs: this._network === 'Regtest',
+      allowUnknownOutputs: this._network === 'Regtest',
+    });
 
     await this.signTransaction(txn, options);
 
-    const psbt = txn.toPSBT();
+    const psbt =
+      this._network === 'Regtest' && !options.ledgerTransport && !options.keystoneTransport
+        ? appendPsbtSignatures(original, txn)
+        : txn.toPSBT();
     const psbtBase64Signed = base64.encode(psbt);
 
     return psbtBase64Signed;

@@ -19,6 +19,8 @@ export class ExtendedUtxo {
 
   private _isExternal!: boolean;
 
+  private _regtestBundle?: Promise<UtxoOrdinalBundle | undefined>;
+
   get address(): string {
     return this._address;
   }
@@ -105,13 +107,26 @@ export class ExtendedUtxo {
   }
 
   async getBundleData(): Promise<UtxoOrdinalBundle | undefined> {
-    const bundleData = await this._utxoCache.getUtxoByOutpoint(this._outpoint, this._address, this._isExternal);
-    return bundleData;
+    if (this._esploraApiProvider._network === 'Regtest') {
+      this._regtestBundle ??= this._utxoCache.regtestOrdinals?.getBundle(
+        this._outpoint,
+        this._address,
+        this._utxo.value,
+      );
+      return this._regtestBundle;
+    }
+    return this._utxoCache.getUtxoByOutpoint(this._outpoint, this._address, this._isExternal);
+  }
+
+  async isRegtestFeeEligible(): Promise<boolean> {
+    return (await this._utxoCache.regtestOrdinals?.getSpendStatus(this._utxo)) === 'clean';
   }
 
   /** Returns undefined if UTXO has not yet been indexed */
   async isEmbellished(): Promise<boolean | undefined> {
     const bundleData = await this.getBundleData();
+
+    if (bundleData?.localInscriptions) return bundleData.localInscriptions.ids.length > 0;
 
     const hasInscriptionsOrExoticSats = bundleData?.sat_ranges.some(
       (satRange) => satRange.inscriptions.length > 0 || satRange.satributes.length > 0,

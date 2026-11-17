@@ -57,11 +57,13 @@ export const sendMaxBtc = async (
   skipDust = true,
   options?: Omit<TransactionOptions, 'forceIncludeOutpointList' | 'overrideChangeAddress'>,
 ) => {
-  let paymentUtxos = await context.paymentAddress.getUtxos();
+  let paymentUtxos = await (context.network === 'Regtest'
+    ? context.paymentAddress.getCommonUtxos()
+    : context.paymentAddress.getUtxos());
   let dustFiltered = false;
 
   if (paymentUtxos.length === 0) {
-    throw new Error('No utxos found');
+    throw new Error(context.network === 'Regtest' ? 'No Regtest UTXOs confirmed clean by ord' : 'No utxos found');
   }
 
   if (skipDust) {
@@ -101,6 +103,14 @@ export const combineUtxos = async (
   feeRate: number,
   options?: Omit<TransactionOptions, 'forceIncludeOutpointList' | 'overrideChangeAddress'>,
 ) => {
+  if (context.network === 'Regtest') {
+    for (const outpoint of outpoints) {
+      const { extendedUtxo } = await context.getUtxo(outpoint);
+      if (!(await extendedUtxo?.isRegtestFeeEligible())) {
+        throw new Error(`Regtest coin ${outpoint} is not confirmed clean by ord`);
+      }
+    }
+  }
   const actions = outpoints.map<SendUtxoAction>((outpoint) => ({
     type: ActionType.SEND_UTXO,
     combinable: true,
@@ -234,17 +244,18 @@ export const sendOrdinalsWithSplit = async (
 
       const bundle = await utxo.extendedUtxo.getBundleData();
 
-      const inscriptionBundle = bundle?.sat_ranges.find((b) =>
-        b.inscriptions.some((i) => i.id === recipient.inscriptionId),
-      );
+      const offset =
+        bundle?.localInscriptions?.located.find((item) => item.id === recipient.inscriptionId)?.offset ??
+        bundle?.sat_ranges.find((range) => range.inscriptions.some((item) => item.id === recipient.inscriptionId))
+          ?.offset;
 
-      if (!inscriptionBundle) {
-        throw new Error('No inscription found in utxo');
+      if (offset === undefined) {
+        throw new Error('Inscription location is unavailable');
       }
 
       return {
         toAddress: recipient.toAddress,
-        location: `${utxo.extendedUtxo.outpoint}:${inscriptionBundle.offset}`,
+        location: `${utxo.extendedUtxo.outpoint}:${offset}`,
       };
     }),
   );
@@ -376,6 +387,10 @@ export const extractOrdinalsFromUtxo = async (
     throw new Error('UTXO is not yet indexed');
   }
 
+  if (context.network === 'Regtest' && bundleData.localInscriptions?.ids.length) {
+    return sendOrdinals(context, [{ outpoint, toAddress: context.ordinalsAddress.address }], feeRate, options);
+  }
+
   const recipients = bundleData?.sat_ranges.map((s) => ({
     toAddress: context.ordinalsAddress.address,
     location: utxo.extendedUtxo?.outpoint + ':' + s.offset,
@@ -414,7 +429,11 @@ export const recoverBitcoin = async (
   const nonOrdinalUtxos = (await context.ordinalsAddress.getCommonUtxos()).filter((u) => u.utxo.status.confirmed);
 
   if (nonOrdinalUtxos.length === 0) {
-    throw new Error('No non-ordinal utxos found to recover');
+    throw new Error(
+      context.network === 'Regtest'
+        ? 'No Regtest UTXOs confirmed clean by ord to recover'
+        : 'No non-ordinal utxos found to recover',
+    );
   }
 
   const outpoints = nonOrdinalUtxos.map((utxo) => utxo.outpoint);
@@ -464,6 +483,17 @@ export const recoverOrdinal = async (
 
   if (ordinalUtxos.length === 0) {
     throw new Error('No ordinal utxos found to recover');
+  }
+  if (context.network === 'Regtest') {
+    return sendOrdinals(
+      context,
+      ordinalUtxos.map(({ outpoint: id }) => ({
+        outpoint: id,
+        toAddress: context.ordinalsAddress.address,
+      })),
+      feeRate,
+      options,
+    );
   }
   const actions = await Promise.all(
     ordinalUtxos.map<Promise<SplitUtxoAction[]>>(async (utxo) => {

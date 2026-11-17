@@ -67,7 +67,11 @@ export const getSortedAvailablePaymentUtxos = async (
   confirmedOnly: boolean,
   dustThreshold = 0,
 ) => {
-  const unusedPaymentUtxos = (await context.paymentAddress.getUtxos()).filter(
+  const candidates =
+    context.network === 'Regtest'
+      ? await context.paymentAddress.getCommonUtxos()
+      : await context.paymentAddress.getUtxos();
+  const unusedPaymentUtxos = candidates.filter(
     (utxoData) =>
       !excludeOutpointList.has(utxoData.outpoint) &&
       (!confirmedOnly || utxoData.utxo.status.confirmed) &&
@@ -182,21 +186,10 @@ export const extractOutputInscriptionsAndSatributes = async (
       const inputBundleData = await input.getBundleData();
       const fromAddress = input.address;
 
-      inputBundleData?.sat_ranges.forEach((s) => {
-        s.inscriptions.forEach((i) => {
-          const inscriptionEntry = {
-            id: i.id,
-            offset: runningOffset + s.offset - outputOffset,
-            fromAddress,
-            number: i.inscription_number,
-            contentType: i.content_type,
-          };
-
-          if (inscriptionEntry.offset >= 0 && inscriptionEntry.offset < outputValue) {
-            inscriptions.push(inscriptionEntry);
-          }
-        });
-      });
+      for (const inscription of getInputInscriptions(inputBundleData, fromAddress)) {
+        const offset = runningOffset + inscription.offset - outputOffset;
+        if (offset >= 0 && offset < outputValue) inscriptions.push({ ...inscription, offset });
+      }
 
       inputBundleData?.sat_ranges.forEach((s) => {
         if (s.satributes.length === 0) {
@@ -232,6 +225,24 @@ export const extractOutputInscriptionsAndSatributes = async (
   return { inscriptions, satributes };
 };
 
+const getInputInscriptions = (
+  bundle: Awaited<ReturnType<ExtendedUtxo['getBundleData']>>,
+  fromAddress: string,
+): IOInscription[] => {
+  const located =
+    bundle?.localInscriptions?.located ??
+    bundle?.sat_ranges.flatMap((range) => range.inscriptions.map((item) => ({ ...item, offset: range.offset }))) ??
+    [];
+
+  return located.map((item) => ({
+    fromAddress,
+    id: item.id,
+    offset: item.offset,
+    number: item.inscription_number,
+    contentType: item.content_type,
+  }));
+};
+
 export const mapInputToEnhancedInput = async (
   input: ExtendedUtxo | ExtendedDummyUtxo,
   walletWillSign: boolean,
@@ -239,18 +250,7 @@ export const mapInputToEnhancedInput = async (
 ): Promise<EnhancedInput> => {
   const bundleData = await input.getBundleData();
 
-  const inscriptions: IOInscription[] =
-    bundleData?.sat_ranges
-      .filter((r) => r.inscriptions.length > 0)
-      .flatMap((r) =>
-        r.inscriptions.map((i) => ({
-          fromAddress: input.address,
-          id: i.id,
-          offset: r.offset,
-          number: i.inscription_number,
-          contentType: i.content_type,
-        })),
-      ) || [];
+  const inscriptions = getInputInscriptions(bundleData, input.address);
   const satributes: IOSatribute[] =
     bundleData?.sat_ranges
       .filter((r) => r.satributes.length > 0)

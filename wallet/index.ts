@@ -11,7 +11,7 @@ import EsploraProvider from '../api/esplora/esploraAPiProvider';
 import { ENTROPY_BYTES } from '../constant';
 import { type Keychain, type NetworkType, type StacksNetwork } from '../types';
 import { bip32 } from '../utils/bip32';
-import { getBtcNetworkDefinition } from '../transactions/btcNetwork';
+import { getBitcoinAddressType, getBtcNetworkDefinition } from '../transactions/btcNetwork';
 
 export * from './encryptionUtils';
 export { hashMessage };
@@ -56,10 +56,10 @@ export function validateBtcAddress({ btcAddress, network }: { btcAddress: string
   }
 }
 
-export function validateBtcAddressIsTaproot(btcAddress: string): boolean {
+export function validateBtcAddressIsTaproot(btcAddress: string, network?: NetworkType): boolean {
   try {
-    // TODO: switch to btc.Address.decode with a new core major version
-    return getAddressInfo(btcAddress)?.type === AddressType.p2tr;
+    const type = network ? getBitcoinAddressType(btcAddress, network) : getAddressInfo(btcAddress).type;
+    return type === AddressType.p2tr;
   } catch {
     return false;
   }
@@ -78,6 +78,13 @@ export async function getStxAddressKeyChain(
 
 const getAddressBalanceAndHistory = async (btcClient: EsploraProvider, address: string | undefined) => {
   if (!address) return { balance: 0n, hasHistory: false };
+  if (btcClient._network === 'Regtest') {
+    const utxos = await btcClient.getUnspentUtxos(address);
+    return {
+      balance: utxos.reduce((balance, utxo) => balance + (utxo.status.confirmed ? BigInt(utxo.value) : 0n), 0n),
+      hasHistory: utxos.length > 0,
+    };
+  }
   const addressData = await btcClient.getAddressData(address);
   return {
     balance: BigInt(addressData.chain_stats.funded_txo_sum - addressData.chain_stats.spent_txo_sum),

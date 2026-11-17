@@ -6,6 +6,7 @@ import { utils } from 'micro-packed';
 import { TransactionInput } from '@scure/btc-signer/psbt';
 import { getRunesClient } from '../../api';
 import { UTXO } from '../../types';
+import { RegtestApiConfigurationError } from '../../api/regtest';
 import { getBtcNetworkDefinition, isInscriptionsAndRunesCompatible } from '../btcNetwork';
 import { InputToSign, TransactionContext } from './context';
 import { ExtendedDummyUtxo, ExtendedUtxo } from './extendedUtxo';
@@ -55,7 +56,7 @@ export class EnhancedPsbt {
     this._psbt = base64.decode(psbtBase64);
 
     this._inputsToSign = inputsToSign;
-    const txn = btc.Transaction.fromPSBT(this._psbt);
+    const txn = this.parseTransaction();
 
     if (inputsToSign) {
       this._inputsToSignMap = {};
@@ -95,6 +96,11 @@ export class EnhancedPsbt {
       this._hasSigHashNone = hasSigHashNone;
       this._hasSigHashSingle = hasSigHashSingle;
     }
+  }
+
+  private parseTransaction() {
+    const regtest = this._context.network === 'Regtest';
+    return btc.Transaction.fromPSBT(this._psbt, { allowUnknownInputs: regtest, allowUnknownOutputs: regtest });
   }
 
   private parseAddressFromOutput(transaction: btc.Transaction, outputIndex: number): ParsedOutputMetadata {
@@ -158,7 +164,7 @@ export class EnhancedPsbt {
   }
 
   getTxId(): string | undefined {
-    const txn = btc.Transaction.fromPSBT(this._psbt);
+    const txn = this.parseTransaction();
     if (txn.isFinal) {
       return txn.id;
     }
@@ -185,18 +191,26 @@ export class EnhancedPsbt {
     inputTxid: string,
     knownEmptyTxids?: string[],
   ) => {
+    const prevoutAmount = inputRaw.witnessUtxo?.amount ?? inputRaw.nonWitnessUtxo?.outputs[inputRaw.index!]?.amount;
     if (!knownEmptyTxids?.includes(inputTxid)) {
-      const addressInput = await this._context.getUtxoFallbackToExternal(`${inputTxid}:${inputRaw.index}`);
-      if (addressInput && addressInput.extendedUtxo) {
-        return addressInput.extendedUtxo;
+      const outpoint = `${inputTxid}:${inputRaw.index}`;
+      if (this._context.network === 'Regtest') {
+        // The local transaction and outspend endpoints can check an external input directly.
+        const utxo = await this._context.paymentAddress.getExternalUtxo(outpoint).catch((error) => {
+          if (error instanceof RegtestApiConfigurationError) throw error;
+          return undefined;
+        });
+        if (utxo && (prevoutAmount === undefined || BigInt(utxo.utxo.value) === prevoutAmount)) return utxo;
+      } else {
+        const addressInput = await this._context.getUtxoFallbackToExternal(outpoint);
+        if (addressInput?.extendedUtxo) return addressInput.extendedUtxo;
       }
     }
 
-    // we know this UTXO won't exist, so we create a dummy one
     const utxo: UTXO = {
       txid: inputTxid,
       vout: inputRaw.index!,
-      value: Number(inputRaw.witnessUtxo?.amount) || 0,
+      value: Number(prevoutAmount ?? 0n),
       status: {
         confirmed: false,
       },
@@ -267,7 +281,7 @@ export class EnhancedPsbt {
   }
 
   async getSummary(options?: GetPSBTSummaryOptions): Promise<PsbtSummary> {
-    const transaction = btc.Transaction.fromPSBT(this._psbt);
+    const transaction = this.parseTransaction();
 
     const { inputs, inputTotal, isSigHashAll, hasSigHashNone, hasSigHashSingle } = await this._extractInputMetadata(
       transaction,
@@ -291,6 +305,10 @@ export class EnhancedPsbt {
           amount: outputRaw.amount ? Number(outputRaw.amount) : 0,
         });
         hasScriptOutput = true;
+        if (this._context.network === 'Regtest') {
+          outputTotal += Number(outputRaw.amount);
+          currentOffset += Number(outputRaw.amount);
+        }
 
         continue;
       }
@@ -302,7 +320,7 @@ export class EnhancedPsbt {
       let satributes: IOSatribute[] = [];
 
       if (isSigHashAll) {
-        if (isInscriptionsAndRunesCompatible(this._context.network)) {
+        if (this._context.network === 'Regtest' || isInscriptionsAndRunesCompatible(this._context.network)) {
           const extractedAssets = await extractOutputInscriptionsAndSatributes(
             inputsExtendedUtxos,
             currentOffset,
@@ -359,17 +377,23 @@ export class EnhancedPsbt {
     }
 
     const enhancedInputs: EnhancedInput[] = await Promise.all(
-      inputs.map((input, idx) =>
-        mapInputToEnhancedInput(
-          input.extendedUtxo,
+      inputs.map(async ({ extendedUtxo, sigHash }, idx) => {
+        const input = await mapInputToEnhancedInput(
+          extendedUtxo,
           !this._inputsToSignMap || idx in this._inputsToSignMap,
-          input.sigHash,
-        ),
-      ),
+          sigHash,
+        );
+        if (this._context.network === 'Regtest' && extendedUtxo instanceof ExtendedDummyUtxo) {
+          input.prevoutUnknown = true;
+        }
+        return input;
+      }),
     );
 
-    const runesClient = getRunesClient(this._context.network);
-    const runeOp = hasScriptOutput ? await runesClient.getDecodedRuneScript(transaction.hex) : undefined;
+    const runeOp =
+      hasScriptOutput && isInscriptionsAndRunesCompatible(this._context.network)
+        ? await getRunesClient(this._context.network).getDecodedRuneScript(transaction.hex)
+        : undefined;
 
     const isFinal = isSigHashAll;
     let feeRate: number | undefined = undefined;
@@ -397,6 +421,14 @@ export class EnhancedPsbt {
   }
 
   async getSignedPsbtBase64(options: PSBTCompilationOptions = {}): Promise<string> {
+    if (
+      this._context.network === 'Regtest' &&
+      !options.finalize &&
+      !options.ledgerTransport &&
+      !options.keystoneTransport
+    ) {
+      return this._context.signPsbt(base64.encode(this._psbt), { inputsToSign: this._inputsToSign });
+    }
     const transaction = btc.Transaction.fromPSBT(this._psbt, { allowUnknownInputs: true, allowUnknownOutputs: true });
     let addedPaddingInput = false;
 

@@ -29,7 +29,7 @@ export * from './transactions';
 export * from './types';
 export * from './utils';
 export * from './wallet';
-export { getBtcNetwork, getBtcNetworkDefinition } from './transactions/btcNetwork';
+export { getBitcoinAddressType, getBtcNetwork, getBtcNetworkDefinition } from './transactions/btcNetwork';
 
 import { resources, utils, store } from './permissions';
 export const permissions = {
@@ -38,3 +38,8 @@ export const permissions = {
   store,
 };
 export type * as Permissions from './permissions';
+
+export { EnhancedPsbt, TransactionContext, createTransactionContext } from './transactions/bitcoin';
+export type { SignOptions } from './transactions/bitcoin/context';
+export type { TransactionContextOptions } from './transactions/bitcoin/contextFactory';
+export type { GetPSBTSummaryOptions, PSBTCompilationOptions, PsbtSummary } from './transactions/bitcoin/types';

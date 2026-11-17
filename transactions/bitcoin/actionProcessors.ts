@@ -281,6 +281,10 @@ export const applySendBtcActionsAndFee = async (
       throw new Error(`Pinned UTXO not found: ${pinnedOutpoint}`);
     }
 
+    if (context.network === 'Regtest' && !(await utxo.extendedUtxo.isRegtestFeeEligible())) {
+      throw new Error(`Regtest fee input ${pinnedOutpoint} is not confirmed clean by ord`);
+    }
+
     await utxo.addressContext.addInput(transaction, utxo.extendedUtxo, options);
     usedOutpoints.add(pinnedOutpoint);
     inputs.push(utxo.extendedUtxo);
@@ -444,7 +448,11 @@ export const applySendBtcActionsAndFee = async (
     const utxoToUse = unusedPaymentUtxos.pop();
 
     if (!utxoToUse) {
-      throw new Error('No more UTXOs to use. Insufficient funds for this transaction');
+      throw new Error(
+        context.network === 'Regtest'
+          ? 'Insufficient funds from Regtest UTXOs confirmed clean by ord'
+          : 'No more UTXOs to use. Insufficient funds for this transaction',
+      );
     }
 
     if (transactionOptions.useEffectiveFeeRate) {

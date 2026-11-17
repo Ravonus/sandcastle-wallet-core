@@ -3,6 +3,7 @@ import EsploraProvider from '../../api/esplora/esploraAPiProvider';
 import { UtxoCache } from '../../api/utxoCache';
 import { SeedVault } from '../../seedVault';
 import type { Account, BtcPaymentType, NetworkType } from '../../types';
+import { getBitcoinAddressType } from '../btcNetwork';
 import {
   AddressContext,
   AddressContextConstructorArgs,
@@ -17,8 +18,11 @@ import {
 } from './context';
 
 const createAddressContext = (contextConstructorArgs: AddressContextConstructorArgs): AddressContext => {
-  // TODO: switch to btc.Address.decode
-  const { type } = getAddressInfo(contextConstructorArgs.address);
+  const { address, accountType, network } = contextConstructorArgs;
+  const type =
+    accountType === 'ledger' || accountType === 'keystone'
+      ? getAddressInfo(address).type
+      : getBitcoinAddressType(address, network);
 
   if (contextConstructorArgs.accountType === 'ledger') {
     if (type === AddressType.p2wpkh) {

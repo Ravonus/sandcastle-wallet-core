@@ -148,6 +148,7 @@ export type TransactionScriptOutput = {
 };
 
 export type EnhancedInput = {
+  prevoutUnknown?: true;
   extendedUtxo: ExtendedUtxo | ExtendedDummyUtxo;
   inscriptions: IOInscription[];
   satributes: IOSatribute[];
