@@ -84,7 +84,8 @@ const validateProps = (props: EstimateProps): props is EstimateProps & { address
 export const brc20TransferEstimateFees = async (
   estimateProps: EstimateProps,
   context: TransactionContext,
-): Promise<TransferEstimateResult> => {
+): Promise<TransferEstimateResult | undefined> => {
+  if (context.network === 'Regtest') return undefined;
   validateProps(estimateProps);
 
   const { tick, amount, revealAddress, feeRate, cancelToken } = estimateProps;
@@ -174,13 +175,15 @@ export async function* brc20TransferExecute(
   options: SignOptions,
 ): AsyncGenerator<
   ExecuteTransferProgressCodes,
-  {
-    revealTransactionId: string;
-    commitTransactionId: string;
-    transferTransactionId: string;
-  },
+  | {
+      revealTransactionId: string;
+      commitTransactionId: string;
+      transferTransactionId: string;
+    }
+  | undefined,
   never
 > {
+  if (context.network === 'Regtest') return undefined;
   validateProps(executeProps);
   const { tick, amount, revealAddress, feeRate, recipientAddress } = executeProps;
 

@@ -41,6 +41,7 @@ export const sendManyRunes = async (
   feeRate: number,
   options?: Omit<TransactionOptions, 'forceIncludeOutpointList' | 'allowUnknownOutputs'>,
 ) => {
+  if (context.network === 'Regtest') return undefined;
   if (recipients.some((r) => r.amount <= 0)) {
     throw new Error('Amount must be positive');
   }
@@ -170,6 +171,7 @@ export const recoverRunes = async (
   feeRate: number,
   options?: Omit<TransactionOptions, 'forceIncludeOutpointList' | 'allowUnknownOutputs'>,
 ) => {
+  if (context.network === 'Regtest') return undefined;
   const runesApi = getRunesClient(context.network);
 
   const [paymentUtxos, runeScriptHex] = await Promise.all([

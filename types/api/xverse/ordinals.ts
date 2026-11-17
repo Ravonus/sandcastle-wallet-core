@@ -111,6 +111,10 @@ type UtxoOrdinalBundleBase<T extends RareSatsTypeApi | RareSatsType, B extends B
   block_height?: number;
   value: number;
   sat_ranges: SatRange<T>[];
+  localInscriptions?: {
+    ids: string[];
+    located: (SatRangeInscription & { offset: number })[];
+  };
   runes?: UtxoRuneEntry<B>[];
 };
 

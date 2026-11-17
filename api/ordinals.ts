@@ -2,6 +2,7 @@ import axios, { isAxiosError } from 'axios';
 import BigNumber from 'bignumber.js';
 import EsploraApiProvider from '../api/esplora/esploraAPiProvider';
 import { OrdinalsApi } from '../api/ordinals/provider';
+import { getRegtestInscriptionContentUrl, RegtestOrdinalsApi } from './ordinals/regtest';
 import { API_TIMEOUT_MILLI, ORDINALS_URL, XVERSE_API_BASE_URL, XVERSE_INSCRIBE_URL } from '../constant';
 import { isInscriptionsAndRunesCompatible } from '../transactions/btcNetwork';
 import {
@@ -58,6 +59,15 @@ export async function fetchBtcOrdinalsData(
   esploraProvider: EsploraApiProvider,
   network: NetworkType,
 ): Promise<BtcOrdinal[]> {
+  if (network === 'Regtest') {
+    const holdings = await new RegtestOrdinalsApi(esploraProvider).getAddressHoldings(btcAddress);
+    return holdings
+      .flatMap(({ utxo, ids }) =>
+        [...new Set(ids)].map((id) => ({ id, utxo, confirmationTime: utxo.status.block_time ?? 0 })),
+      )
+      .sort(sortOrdinalsByConfirmationTime);
+  }
+
   const xordClient = new OrdinalsApi({
     network,
   });
@@ -87,7 +97,15 @@ export async function fetchBtcOrdinalsData(
   return ordinals.sort(sortOrdinalsByConfirmationTime);
 }
 
-export async function getOrdinalIdsFromUtxo(network: NetworkType, utxo: UTXO): Promise<string[]> {
+export async function getOrdinalIdsFromUtxo(
+  network: NetworkType,
+  utxo: UTXO,
+  regtestOrdinals?: RegtestOrdinalsApi,
+): Promise<string[]> {
+  if (network === 'Regtest') {
+    const output = await regtestOrdinals?.getOutput(`${utxo.txid}:${utxo.vout}`);
+    return output && output.address === utxo.address && output.value === utxo.value ? output.inscriptions : [];
+  }
   const ordinalContentUrl = `${XVERSE_INSCRIBE_URL(network)}/v1/inscriptions/utxo/${utxo.txid}/${utxo.vout}`;
 
   const { data: ordinalIds } = await axios.get<string[]>(ordinalContentUrl);
@@ -95,8 +113,8 @@ export async function getOrdinalIdsFromUtxo(network: NetworkType, utxo: UTXO): P
   return ordinalIds;
 }
 
-export async function getOrdinalIdFromUtxo(network: NetworkType, utxo: UTXO) {
-  const ordinalIds = await getOrdinalIdsFromUtxo(network, utxo);
+export async function getOrdinalIdFromUtxo(network: NetworkType, utxo: UTXO, regtestOrdinals?: RegtestOrdinalsApi) {
+  const ordinalIds = await getOrdinalIdsFromUtxo(network, utxo, regtestOrdinals);
   if (ordinalIds.length > 0) {
     return ordinalIds[ordinalIds.length - 1];
   } else {
@@ -104,11 +122,20 @@ export async function getOrdinalIdFromUtxo(network: NetworkType, utxo: UTXO) {
   }
 }
 
-export async function getTextOrdinalContent(network: NetworkType, inscriptionId: string): Promise<string> {
-  const url = ORDINALS_URL(network, inscriptionId);
+export async function getTextOrdinalContent(
+  network: NetworkType,
+  inscriptionId: string,
+  ordApiUrl?: string,
+): Promise<string> {
+  if (network === 'Regtest' && !ordApiUrl?.trim()) return '';
+  const url =
+    network === 'Regtest'
+      ? getRegtestInscriptionContentUrl(ordApiUrl, inscriptionId)
+      : ORDINALS_URL(network, inscriptionId);
   return axios
     .get<string>(url, {
       timeout: API_TIMEOUT_MILLI,
+      ...(network === 'Regtest' ? { maxRedirects: 0 } : {}),
       transformResponse: [(data) => parseOrdinalTextContentData(data)],
     })
     .then((response) => response!.data)
@@ -123,6 +150,12 @@ export async function getNonOrdinalUtxo(
   network: NetworkType,
 ): Promise<Array<UTXO>> {
   const unspentOutputs = await esploraProvider.getUnspentUtxos(address);
+  if (network === 'Regtest') {
+    const ordinals = new RegtestOrdinalsApi(esploraProvider);
+    const statuses = await Promise.all(unspentOutputs.map((utxo) => ordinals.getSpendStatus(utxo)));
+    return unspentOutputs.filter((_, index) => statuses[index] === 'clean');
+  }
+
   const nonOrdinalOutputs: Array<UTXO> = [];
 
   for (let i = 0; i < unspentOutputs.length; i++) {
@@ -136,6 +169,7 @@ export async function getNonOrdinalUtxo(
 }
 
 export async function getOrdinalsFtBalance(network: NetworkType, address: string): Promise<FungibleToken[]> {
+  if (network === 'Regtest') return [];
   const url = `${XVERSE_API_BASE_URL(network)}/v1/ordinals/token/balances/${address}`;
   return axios
     .get(url, {
@@ -177,6 +211,7 @@ export async function getBrc20History(
   address: string,
   token: string,
 ): Promise<Brc20HistoryTransactionData[]> {
+  if (network === 'Regtest') return [];
   const url = `${XVERSE_API_BASE_URL(network)}/v1/ordinals/token/${token}/history/${address}`;
   return axios
     .get(url, {
@@ -248,7 +283,12 @@ export const getUtxoOrdinalBundle = async (
   network: NetworkType,
   txid: string,
   vout: number,
-): Promise<UtxoBundleResponse> => {
+  regtestOrdinals?: RegtestOrdinalsApi,
+): Promise<UtxoBundleResponse | undefined> => {
+  if (network === 'Regtest') {
+    const bundle = await regtestOrdinals?.getBundle(`${txid}:${vout}`);
+    return bundle && { ...bundle, xVersion: 0 };
+  }
   const response = await axios.get<UtxoBundleResponse>(
     `${XVERSE_API_BASE_URL(network)}/v2/ordinal-utxo/${txid}:${vout}`,
     {
@@ -262,9 +302,10 @@ export const getUtxoOrdinalBundleIfFound = async (
   network: NetworkType,
   txid: string,
   vout: number,
+  regtestOrdinals?: RegtestOrdinalsApi,
 ): Promise<UtxoBundleResponse | undefined> => {
   try {
-    const data = await getUtxoOrdinalBundle(network, txid, vout);
+    const data = await getUtxoOrdinalBundle(network, txid, vout, regtestOrdinals);
     return data;
   } catch (e) {
     // we don't reject on 404s because if the UTXO is not found,
@@ -285,7 +326,19 @@ export const mapRareSatsAPIResponseToBundle = (apiBundle: UtxoOrdinalBundleApi):
     block_height: apiBundle.block_height,
     value: apiBundle.value,
     runes: apiBundle.runes,
+    ...(apiBundle.localInscriptions && { localInscriptions: apiBundle.localInscriptions }),
   };
+
+  if (apiBundle.localInscriptions) {
+    return {
+      ...generalBundleInfo,
+      satRanges: [],
+      inscriptions: apiBundle.localInscriptions.located,
+      satributes: [],
+      totalExoticSats: 0,
+      runes: [],
+    };
+  }
 
   const commonUnknownRange: BundleSatRange = {
     range: {

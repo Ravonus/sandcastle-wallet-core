@@ -64,8 +64,8 @@ const useInscriptionFees = (props: Props) => {
           },
           context,
         );
-        setCommitValue(result.commitValue);
-        setCommitValueBreakdown(result.valueBreakdown);
+        setCommitValue(result?.commitValue);
+        setCommitValueBreakdown(result?.valueBreakdown);
       } catch (e) {
         if (CoreError.isCoreError(e) && (e.code ?? '') in InscriptionErrorCode) {
           setErrorCode(e.code as InscriptionErrorCode);

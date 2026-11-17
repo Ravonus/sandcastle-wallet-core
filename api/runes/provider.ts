@@ -89,7 +89,7 @@ class RunesApi {
 
   constructor(network: NetworkType, customAdapter?: AxiosAdapter) {
     this.clientBigNumber = axios.create({
-      baseURL: `${XVERSE_API_BASE_URL(network)}`,
+      baseURL: network === 'Regtest' ? undefined : XVERSE_API_BASE_URL(network),
       headers: {
         'Content-Type': 'application/json',
         'X-Client-Version': getXClientVersion() || undefined,
@@ -103,7 +103,10 @@ class RunesApi {
       transformRequest: (req) => {
         return JSONBig.stringify(req);
       },
-      adapter: customAdapter,
+      adapter:
+        network === 'Regtest'
+          ? () => Promise.reject(new Error('Hosted Runes APIs are unavailable on Regtest'))
+          : customAdapter,
     });
 
     this.network = network;
@@ -117,6 +120,7 @@ class RunesApi {
    * @return {Promise<RuneBalance[]>}
    */
   async getRuneBalances(address: string, includeUnconfirmed = false): Promise<RuneBalance[]> {
+    if (this.network === 'Regtest') return [];
     const response = await this.clientBigNumber.get<RuneBalance[]>(`/v2/address/${address}/rune-balance`, {
       params: { includeUnconfirmed },
     });
@@ -131,6 +135,7 @@ class RunesApi {
   async getRuneInfo(runeId: bigint): Promise<Rune | undefined>;
   async getRuneInfo(runeNameOrId: string): Promise<Rune | undefined>;
   async getRuneInfo(runeNameOrId: string | bigint): Promise<Rune | undefined> {
+    if (this.network === 'Regtest') return undefined;
     const mutex = getMutex(`runeInfo-${runeNameOrId}`);
 
     if (mutex.isLocked()) {
@@ -196,6 +201,7 @@ class RunesApi {
    * @returns {string} - The encoded script
    */
   async getEncodedScriptHex(payload: { edicts: Edict[]; pointer?: number }): Promise<string> {
+    if (this.network === 'Regtest') return '';
     const response = await this.clientBigNumber.post<EncodeResponse>('/v1/runes/tools/encode-edicts', { payload });
 
     return response.data.payload;
@@ -207,6 +213,7 @@ class RunesApi {
    * @returns {ArtifactResponse | undefined} - The decoded script or undefined if the script is invalid
    */
   async getDecodedRuneScript(transactionHex: string): Promise<Artifact | undefined> {
+    if (this.network === 'Regtest') return undefined;
     const response = await this.clientBigNumber.post<Artifact>(
       `/v1/runes/tools/decode-script`,
       { transactionHex },
@@ -223,11 +230,13 @@ class RunesApi {
   }
 
   async getRunesSellOrder(args: RuneSellRequest): Promise<RuneSellResponse> {
+    if (this.network === 'Regtest') return { orderPsbtBase64: '' };
     const response = await this.clientBigNumber.post<RuneSellResponse>('/v1/market/runes/create-sell-order', args);
     return response.data;
   }
 
   async submitRunesSellOrder(args: SubmitRuneSellRequest): Promise<SubmitRunesSellResponse> {
+    if (this.network === 'Regtest') return { orderIds: [] };
     const response = await this.clientBigNumber.post<SubmitRunesSellResponse>(
       '/v1/market/runes/submit-sell-order',
       args,
@@ -236,11 +245,13 @@ class RunesApi {
   }
 
   async cancelRunesSellOrder(args: CancelOrderRequest): Promise<CancelOrderResponse> {
+    if (this.network === 'Regtest') return { orderIds: [], token: '', message: '' };
     const response = await this.clientBigNumber.post<CancelOrderResponse>('/v1/market/runes/cancel-sell-order', args);
     return response.data;
   }
 
   async submitCancelRunesSellOrder(args: SubmitCancelOrderRequest): Promise<SubmitCancelOrderResponse> {
+    if (this.network === 'Regtest') return { orderIds: [] };
     const response = await this.clientBigNumber.post<SubmitCancelOrderResponse>(
       '/v1/market/runes/submit-cancel-order',
       args,
@@ -249,13 +260,15 @@ class RunesApi {
   }
 
   async getRunesUtxos(params: { address: string; rune: string }): Promise<GetRunesUtxosResponse> {
+    if (this.network === 'Regtest') return [];
     const response = await this.clientBigNumber.get<GetRunesUtxosResponse>(
       `/v1/market/address/${params.address}/rune/${params.rune}/utxos`,
     );
     return response.data;
   }
 
-  async getRuneMarketData(rune: string): Promise<RuneMarketInfo> {
+  async getRuneMarketData(rune: string): Promise<RuneMarketInfo | undefined> {
+    if (this.network === 'Regtest') return undefined;
     const response = await this.clientBigNumber.get(`/v1/market/runes/${rune}/market-data`);
     return response.data;
   }
@@ -266,6 +279,7 @@ class RunesApi {
    * @param {string} fiatCurrency
    */
   async getRuneFiatRatesByRuneIds(runeIds: string[] | string, fiatCurrency: string): Promise<SimplePriceResponse> {
+    if (this.network === 'Regtest') return {};
     const response = await this.clientBigNumber.get<SimplePriceResponse>('/v1/runes/fiat-rates', {
       params: {
         currency: fiatCurrency,

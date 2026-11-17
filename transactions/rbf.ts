@@ -69,7 +69,7 @@ const getRbfTransactionSummary = async (esploraProvider: EsploraProvider, txid: 
 };
 
 const isTransactionRbfEnabled = (transaction: BtcTransactionData, wallet: RBFProps) => {
-  if (transaction.confirmed) {
+  if (transaction.confirmed || wallet.network === 'Regtest') {
     return false;
   }
 

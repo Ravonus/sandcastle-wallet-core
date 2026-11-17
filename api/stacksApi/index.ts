@@ -2,13 +2,14 @@ import { StacksNetworkName } from '@stacks/network';
 import { NetworkType, StacksMainnet, StacksTestnet } from '../../types';
 import { StacksApiProvider } from './provider';
 
-const clients: Partial<Record<StacksNetworkName, StacksApiProvider>> = {};
-const stacksNetworksMap: Record<NetworkType, StacksNetworkName> = {
+type ClientKey = StacksNetworkName | 'regtest';
+const clients: Partial<Record<ClientKey, StacksApiProvider>> = {};
+const stacksNetworksMap: Record<NetworkType, ClientKey> = {
   Mainnet: 'mainnet',
   Testnet: 'testnet',
   Testnet4: 'testnet',
   Signet: 'testnet',
-  Regtest: 'testnet', // stacks testnet uses regtest btc network
+  Regtest: 'regtest',
 };
 
 export const getStacksApiClient = (networkType: NetworkType): StacksApiProvider => {
@@ -16,7 +17,7 @@ export const getStacksApiClient = (networkType: NetworkType): StacksApiProvider 
 
   if (!clients[networkName]) {
     const network = networkType === 'Mainnet' ? StacksMainnet : StacksTestnet;
-    clients[networkName] = new StacksApiProvider({ network });
+    clients[networkName] = new StacksApiProvider({ network, btcNetwork: networkType });
   }
 
   return clients[networkName] as StacksApiProvider;

@@ -62,7 +62,8 @@ type ExecuteProps = {
 export async function inscriptionMintFeeEstimate(
   estimateProps: EstimateProps,
   context: TransactionContext,
-): Promise<EstimateResult> {
+): Promise<EstimateResult | undefined> {
+  if (context.network === 'Regtest') return undefined;
   const {
     content,
     contentType,
@@ -173,7 +174,8 @@ export async function inscriptionMintExecute(
   executeProps: ExecuteProps,
   context: TransactionContext,
   options?: SignOptions,
-): Promise<string> {
+): Promise<string | undefined> {
+  if (context.network === 'Regtest') return undefined;
   const {
     contentString,
     contentBase64,

@@ -11,6 +11,7 @@ import {
 import { JSONBigOnDemand } from '../utils/bignumber';
 import BitcoinEsploraApiProvider from './esplora/esploraAPiProvider';
 import { getAddressUtxoOrdinalBundles, getUtxoOrdinalBundle } from './ordinals';
+import { RegtestOrdinalsApi } from './ordinals/regtest';
 
 export type UtxoCacheStruct<R extends BigNumber | number = BigNumber> = {
   [utxoId: string]: UtxoOrdinalBundle<R>;
@@ -25,10 +26,11 @@ type UtxoCacheStorage<R extends BigNumber | number = BigNumber> = {
   utxos: UtxoCacheStruct<R>;
 };
 
-type UtxoCacheConfig = {
+export type UtxoCacheConfig = {
   cacheStorageController: ExtendedStorageAdapter;
   network: NetworkType;
   electrsApi: BitcoinEsploraApiProvider;
+  regtestOrdinals?: RegtestOrdinalsApi;
 };
 
 // TODO: refactor below classes so the local cache manages the cache storage controller
@@ -98,10 +100,15 @@ export class UtxoCache {
 
   static readonly CACHE_RESYNC_TTL = 1000 * 60 * 60 * 24 * 1; // 1 day
 
+  readonly regtestOrdinals?: RegtestOrdinalsApi;
+
   constructor(config: UtxoCacheConfig) {
     this._cacheStorageController = config.cacheStorageController;
     this._network = config.network;
     this._electrsApi = config.electrsApi;
+    if (config.network === 'Regtest') {
+      this.regtestOrdinals = config.regtestOrdinals ?? new RegtestOrdinalsApi(config.electrsApi);
+    }
   }
 
   private _getAddressCacheStorageKey = (address: string): string =>
@@ -280,6 +287,7 @@ export class UtxoCache {
     try {
       const apiBundleData = await getUtxoOrdinalBundle(this._network, txid, vout);
 
+      if (!apiBundleData) return [undefined, undefined];
       const { xVersion, ...utxo } = apiBundleData;
       return [xVersion, this._mapUtxoApiBundleToBundle(utxo)];
     } catch (err) {
@@ -498,6 +506,8 @@ export class UtxoCache {
     address: string,
     skipCache = false,
   ): Promise<UtxoOrdinalBundle | undefined> => {
+    if (this._network === 'Regtest') return this.regtestOrdinals?.getBundle(outpoint, address);
+
     const [txid, vout] = outpoint.split(':');
     if (skipCache) {
       const [, utxo] = await this._getUtxo(txid, +vout);

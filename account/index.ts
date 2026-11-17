@@ -220,6 +220,7 @@ export async function checkAccountActivity(
     if (!addressToCheck) {
       return false;
     }
+    if (btcApi._network === 'Regtest') return btcApi.hasAddressActivity(addressToCheck);
     const addressMetadata = await btcApi.getAddressData(addressToCheck);
 
     return addressMetadata.chain_stats.tx_count + addressMetadata.mempool_stats.tx_count > 0;
@@ -241,7 +242,7 @@ export async function checkAccountActivity(
   }
 
   // check stx last
-  if (account.stxAddress) {
+  if (btcApi._network !== 'Regtest' && account.stxAddress) {
     const stxTxHistory: StxTransactionListData = await getConfirmedTransactions({
       stxAddress: account.stxAddress,
       network: selectedNetwork,
@@ -268,7 +269,12 @@ export async function* restoreWalletWithAccounts(
   let maxIdx = 0n;
 
   for (const existingAccount of currentAccounts) {
-    maxIdx++;
+    if (btcNetwork.type === 'Regtest') {
+      const nextIndex = BigInt(existingAccount.id) + 1n;
+      if (nextIndex > maxIdx) maxIdx = nextIndex;
+    } else {
+      maxIdx++;
+    }
     if (existingAccount.btcAddresses) {
       newAccounts.push(existingAccount);
 
@@ -283,8 +289,7 @@ export async function* restoreWalletWithAccounts(
       network: btcNetwork.type,
       rootNode,
     });
-    const username = await getBnsName(newAccount.stxAddress, stacksNetwork);
-    newAccount.bnsName = username;
+    if (btcNetwork.type !== 'Regtest') newAccount.bnsName = await getBnsName(newAccount.stxAddress, stacksNetwork);
     newAccounts.push(newAccount);
 
     if (generatorMode) {
@@ -301,13 +306,13 @@ export async function* restoreWalletWithAccounts(
       rootNode,
     });
 
-    const username = await getBnsName(newAccount.stxAddress, stacksNetwork);
-    newAccount.bnsName = username;
+    if (btcNetwork.type !== 'Regtest') newAccount.bnsName = await getBnsName(newAccount.stxAddress, stacksNetwork);
 
     const accountHasActivity = await checkAccountActivity(newAccount, stacksNetwork, btcClient);
 
     if (!accountHasActivity) {
       emptyAccounts.push(newAccount);
+      if (btcNetwork.type === 'Regtest') maxIdx++;
       continue;
     }
 
@@ -350,6 +355,8 @@ export async function createWalletAccount(
     network: selectedNetwork.type,
     rootNode,
   });
+  if (selectedNetwork.type === 'Regtest') return [...walletAccounts, newAccount];
+
   const username = await getBnsName(newAccount.stxAddress, networkObject);
   newAccount.bnsName = username;
 

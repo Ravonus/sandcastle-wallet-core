@@ -23,7 +23,7 @@ const useBtcRbfTransactionData = ({
   btcPaymentAddressType,
 }: Props) => {
   const fetchRbfData = async (): Promise<RbfData | undefined> => {
-    if (!account || !transaction) {
+    if (!account || !transaction || btcNetwork.type === 'Regtest') {
       return;
     }
 
@@ -50,8 +50,8 @@ const useBtcRbfTransactionData = ({
   };
 
   return useQuery({
-    queryKey: ['btc-rbf-transaction-data', transaction?.txid],
-    queryFn: fetchRbfData,
+    queryKey: ['btc-rbf-transaction-data', btcNetwork.type, btcNetwork.btcApiUrl, transaction?.txid],
+    queryFn: async () => (await fetchRbfData()) ?? null,
     enabled: !!transaction && !!account,
   });
 };

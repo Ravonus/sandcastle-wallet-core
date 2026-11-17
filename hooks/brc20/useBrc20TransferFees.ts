@@ -61,8 +61,8 @@ const useBrc20TransferFees = (props: Props) => {
             },
             context,
           );
-          setCommitValue(result.commitValue);
-          setCommitValueBreakdown(result.valueBreakdown);
+          setCommitValue(result?.commitValue);
+          setCommitValueBreakdown(result?.valueBreakdown);
         } catch (e) {
           if (axios.isCancel(e)) {
             // The request was cancelled due to the use effect being cleaned up

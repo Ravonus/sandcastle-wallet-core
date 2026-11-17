@@ -7,13 +7,17 @@ import axios, { AxiosInstance } from 'axios';
 export class OrdinalsServiceApi {
   client: AxiosInstance;
 
-  constructor(network?: NetworkType) {
+  constructor(private readonly network?: NetworkType) {
     this.client = axios.create({
-      baseURL: ORDINALS_SERVICE_BASE_URL(network),
+      baseURL: network === 'Regtest' ? undefined : ORDINALS_SERVICE_BASE_URL(network),
+      ...(network === 'Regtest' && {
+        adapter: () => Promise.reject(new Error('Hosted ordinals orders are unavailable on Regtest')),
+      }),
     });
   }
 
   createMintOrder = async (mintOrderParams: CreateMintOrderRequest) => {
+    if (this.network === 'Regtest') return undefined;
     const response = await this.client.post<CreateOrderResponse>('/runes/mint/orders', {
       ...mintOrderParams,
     });
@@ -21,6 +25,7 @@ export class OrdinalsServiceApi {
   };
 
   createEtchOrder = async (etchOrderParams: CreateEtchOrderRequest) => {
+    if (this.network === 'Regtest') return undefined;
     const response = await this.client.post<CreateOrderResponse>('/runes/etch/orders', {
       ...etchOrderParams,
     });
@@ -28,6 +33,7 @@ export class OrdinalsServiceApi {
   };
 
   executeMint = async (orderId: string, fundTransactionId: string) => {
+    if (this.network === 'Regtest') return undefined;
     const response = await this.client.post(`/runes/mint/orders/${orderId}/execute`, {
       fundTransactionId,
     });
@@ -35,6 +41,7 @@ export class OrdinalsServiceApi {
   };
 
   executeEtch = async (orderId: string, fundTransactionId: string) => {
+    if (this.network === 'Regtest') return undefined;
     const response = await this.client.post(`/runes/etch/orders/${orderId}/execute`, {
       fundTransactionId,
     });
