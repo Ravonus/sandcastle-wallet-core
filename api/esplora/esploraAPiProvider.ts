@@ -438,7 +438,7 @@ export class BitcoinEsploraApiProvider {
             const key = outpoint({ txid, vout });
             const address =
               this.scannedOutpointAddresses.get(key) ??
-              (await this.getTransaction(txid).catch(() => undefined))?.vout[vout]?.scriptpubkey_address;
+              (await this.getTransaction(txid).catch(() => undefined))?.vout?.[vout]?.scriptpubkey_address;
             return [key, address ?? null] as const;
           }),
         );

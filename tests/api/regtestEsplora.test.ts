@@ -201,7 +201,7 @@ describe('Regtest Esplora', () => {
         shared.set(key, value);
       },
     };
-    const client = () => BitcoinEsploraApiProvider.fromSettings({ ...settings, btcApiUrl: base }, storage);
+    const client = (btcApiUrl = base) => BitcoinEsploraApiProvider.fromSettings({ ...settings, btcApiUrl }, storage);
     const spend = new Transaction();
     spend.addInput(parent.getHash(), 0);
     spend.addOutput(parent.outs[0].script, 4000);
@@ -220,6 +220,9 @@ describe('Regtest Esplora', () => {
     await sender.sendRawTransaction(spend.toHex());
     expect(await client().getUnspentUtxos(address)).toEqual([]);
     expect(await client().isRegtestFundingAvailable(utxo)).toBe(false);
+    const otherBase = 'http://localhost:19455';
+    nock(otherBase).get(`/address/${address}/utxo`).reply(200, [utxo]);
+    expect(await client(otherBase).getUnspentUtxos(address)).toMatchObject([utxo]);
     expect(await client().getUnspentUtxos(address)).toEqual([]);
     expect([...shared.values()]).toEqual(['{}']);
     expect(await client().getUnspentUtxos(address)).toMatchObject([utxo]);
