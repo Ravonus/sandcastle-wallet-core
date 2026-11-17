@@ -7,7 +7,7 @@ describe('Regtest endpoint URLs', () => {
     ['http://host:19445', 'http://host:19445'],
     ['http://host:19445/api', 'http://host:19445/api'],
     ['https://host/api', 'https://host/api'],
-    ['http://192.168.1.5:3002', 'http://192.168.1.5:3002'],
+    ['http://192.0.2.5:3002', 'http://192.0.2.5:3002'],
     ['localhost:3002/api', 'http://localhost:3002/api'],
     ['host:19445', 'http://host:19445'],
     ['host', 'http://host'],
@@ -35,6 +35,8 @@ describe('Regtest endpoint URLs', () => {
     'mempool.space:19445/api',
     'https://api.testnet.hiro.so.',
     'https://gamma.io',
+    'https://gamma.mypinata.cloud/ipfs',
+    'https://api.unisat.io',
     'ordinals.com',
     'sbtc-mempool.tech',
   ])('rejects invalid or hosted input %s', (input) => {

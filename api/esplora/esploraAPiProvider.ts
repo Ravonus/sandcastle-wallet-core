@@ -19,22 +19,27 @@ import {
   NetworkType,
   RecommendedFeeResponse,
   SettingsNetwork,
+  StorageAdapter,
   TransactionOutspend,
   UTXO,
 } from '../../types';
 import { AxiosRateLimit } from '../../utils/axiosRateLimit';
-import { getRegtestOrdJson, isNotFound, regtestApiUrl, REGTEST_API_TIMEOUT } from '../regtest';
+import { getRegtestOrdJson, isNotFound, regtestApiUrl, regtestTransport, REGTEST_API_TIMEOUT } from '../regtest';
 
 export interface EsploraApiProviderOptions {
   network: NetworkType;
   url?: string;
   fallbackUrl?: string;
   ordApiUrl?: string;
+  pendingSpendStorage?: Pick<StorageAdapter, 'get' | 'set'>;
 }
 
 const unsupportedRoutes = new Map<string, Set<string>>();
 const scanQueues = new Map<string, Mutex>();
 const pendingScans = new Map<string, Promise<UTXO[]>>();
+const pendingSpendQueues = new Map<string, Mutex>();
+const outpoint = ({ txid, vout }: Pick<UTXO, 'txid' | 'vout'>) => `${txid}:${vout}`;
+type PendingSpends = Record<string, string | null>;
 
 const minimumFees: RecommendedFeeResponse = {
   economyFee: 1,
@@ -49,12 +54,19 @@ export type RegtestEsploraStatus = { ok: boolean; network: string };
 export class BitcoinEsploraApiProvider {
   readonly ordApiUrl?: string;
 
-  static fromSettings(settings: SettingsNetwork): BitcoinEsploraApiProvider {
+  private readonly pendingSpendStorage?: EsploraApiProviderOptions['pendingSpendStorage'];
+  private readonly scannedOutpointAddresses = new Map<string, string>();
+
+  static fromSettings(
+    settings: SettingsNetwork,
+    pendingSpendStorage?: EsploraApiProviderOptions['pendingSpendStorage'],
+  ): BitcoinEsploraApiProvider {
     return new BitcoinEsploraApiProvider({
       network: settings.type,
       url: settings.btcApiUrl,
       fallbackUrl: settings.fallbackBtcApiUrl,
       ordApiUrl: settings.ordApiUrl,
+      pendingSpendStorage,
     });
   }
 
@@ -71,6 +83,7 @@ export class BitcoinEsploraApiProvider {
   constructor(options: EsploraApiProviderOptions) {
     const { url, network, fallbackUrl, ordApiUrl } = options;
     this.ordApiUrl = ordApiUrl;
+    this.pendingSpendStorage = options.pendingSpendStorage;
     let baseURL = url;
 
     if (!baseURL) {
@@ -95,7 +108,7 @@ export class BitcoinEsploraApiProvider {
       }
     }
     const axiosConfig: AxiosRequestConfig =
-      network === 'Regtest' ? { baseURL, timeout: REGTEST_API_TIMEOUT, maxRedirects: 0 } : { baseURL };
+      network === 'Regtest' ? { baseURL, timeout: REGTEST_API_TIMEOUT, ...regtestTransport } : { baseURL };
 
     this._network = network;
     this.bitcoinApi = axios.create(axiosConfig);
@@ -173,7 +186,12 @@ export class BitcoinEsploraApiProvider {
     return response.data;
   }
 
-  private async optionalRegtestRoute<T>(route: string, path: string, parentTxid?: string): Promise<T | undefined> {
+  private async optionalRegtestRoute<T>(
+    route: string,
+    path: string,
+    parentTxid?: string,
+    cache404 = true,
+  ): Promise<T | undefined> {
     const base = regtestApiUrl(this.bitcoinApi.defaults.baseURL, 'bitcoin');
     let unsupported = unsupportedRoutes.get(base);
     if (!unsupported) {
@@ -187,7 +205,7 @@ export class BitcoinEsploraApiProvider {
     } catch (error) {
       if (!isNotFound(error)) throw error;
       // A full Esplora also returns 404 for an unknown transaction.
-      if (!parentTxid || (await this.getTransaction(parentTxid).catch(() => undefined))) {
+      if (cache404 && (!parentTxid || (await this.getTransaction(parentTxid).catch(() => undefined)))) {
         unsupported.add(route);
       }
       return undefined;
@@ -216,6 +234,72 @@ export class BitcoinEsploraApiProvider {
       .finally(() => pendingScans.delete(key));
     pendingScans.set(key, scan);
     return scan;
+  }
+
+  private get pendingSpendKey() {
+    return `sandcastle:pending-spends:${this._network}:${regtestApiUrl(this.bitcoinApi.defaults.baseURL, 'bitcoin')}`;
+  }
+
+  private async withPendingSpends<T>(action: (spends: PendingSpends, save: () => Promise<void>) => Promise<T>) {
+    const storage = this.pendingSpendStorage!;
+    const key = this.pendingSpendKey;
+    const run = async () => {
+      const spends: PendingSpends = JSON.parse((await storage.get(key)) ?? '{}');
+      return action(spends, async () => {
+        await storage.set(key, JSON.stringify(spends));
+      });
+    };
+    const locks = globalThis.navigator?.locks;
+    if (locks) return locks.request(key, run);
+    let queue = pendingSpendQueues.get(key);
+    if (!queue) {
+      queue = new Mutex();
+      pendingSpendQueues.set(key, queue);
+    }
+    return queue.runExclusive(run);
+  }
+
+  private async filterPendingSpends(address: string, coins: UTXO[]): Promise<UTXO[]> {
+    if (!this.pendingSpendStorage) return coins;
+    // Retain only the latest scan for each address so sendRawTransaction can associate inputs with the scan.
+    for (const [key, knownAddress] of this.scannedOutpointAddresses) {
+      if (knownAddress === address) this.scannedOutpointAddresses.delete(key);
+    }
+    const scanned = new Set(coins.map(outpoint));
+    for (const key of scanned) this.scannedOutpointAddresses.set(key, address);
+
+    return this.withPendingSpends(async (spends, save) => {
+      let changed = false;
+      for (const [key, knownAddress] of Object.entries(spends)) {
+        if (knownAddress === address && !scanned.has(key)) {
+          delete spends[key];
+          changed = true;
+        } else if (knownAddress === null && scanned.has(key)) {
+          spends[key] = address;
+          changed = true;
+        }
+      }
+      if (changed) await save();
+      return coins.filter((coin) => !Object.hasOwn(spends, outpoint(coin)));
+    });
+  }
+
+  async isRegtestFundingAvailable(coin: UTXO): Promise<boolean> {
+    if (
+      this.pendingSpendStorage &&
+      (await this.withPendingSpends(async (spends) => Object.hasOwn(spends, outpoint(coin))))
+    ) {
+      return false;
+    }
+    const [outspend, parent] = await Promise.all([
+      this.httpGet<TransactionOutspend>(`/tx/${coin.txid}/outspend/${coin.vout}`).catch(() => undefined),
+      this.getTransaction(coin.txid).catch(() => undefined),
+    ]);
+    if (outspend?.spent === true) return false;
+    const height = parent?.status?.block_height ?? coin.status.block_height;
+    if (parent?.vin?.[0]?.is_coinbase !== true || height === undefined) return true;
+    const tip = await this.getLatestBlockHeight().catch(() => undefined);
+    return tip === undefined || tip - height + 1 >= 100;
   }
 
   async getBalance(address: string) {
@@ -260,7 +344,8 @@ export class BitcoinEsploraApiProvider {
       ? this.getRegtestUtxos(address)
       : this.httpGet<UTXO[]>(`/address/${address}/utxo`));
 
-    const utxoSets = data.map((utxo) => ({
+    const coins = this._network === 'Regtest' ? await this.filterPendingSpends(address, data) : data;
+    const utxoSets = coins.map((utxo) => ({
       ...utxo,
       address,
       blockHeight: utxo.status.block_height,
@@ -331,12 +416,44 @@ export class BitcoinEsploraApiProvider {
   async sendRawTransaction(rawTransaction: string): Promise<BtcTransactionBroadcastResponse> {
     let data: string;
     if (this._network === 'Regtest') {
-      const response = await this.bitcoinApi.post<string>('/tx', rawTransaction, {
-        headers: { 'Content-Type': 'text/plain' },
-        responseType: 'text',
-      });
-      data = response.data.trim();
-      if (!/^[0-9a-f]{64}$/i.test(data)) throw new Error('Invalid Regtest broadcast transaction id');
+      const post = async () => {
+        const response = await this.bitcoinApi.post<string>('/tx', rawTransaction, {
+          headers: { 'Content-Type': 'text/plain' },
+          responseType: 'text',
+        });
+        const txid = response.data.trim();
+        if (!/^[0-9a-f]{64}$/i.test(txid)) throw new Error('Invalid Regtest broadcast transaction id');
+        return txid;
+      };
+      if (this.pendingSpendStorage) {
+        const tx = Transaction.fromRaw(hex.decode(rawTransaction), {
+          allowUnknownInputs: true,
+          allowUnknownOutputs: true,
+        });
+        const inputs = await Promise.all(
+          Array.from({ length: tx.inputsLength }, async (_, index) => {
+            const input = tx.getInput(index);
+            const txid = hex.encode(input.txid!);
+            const vout = input.index!;
+            const key = outpoint({ txid, vout });
+            const address =
+              this.scannedOutpointAddresses.get(key) ??
+              (await this.getTransaction(txid).catch(() => undefined))?.vout[vout]?.scriptpubkey_address;
+            return [key, address ?? null] as const;
+          }),
+        );
+        data = await this.withPendingSpends(async (spends, save) => {
+          if (inputs.some(([key]) => Object.hasOwn(spends, key))) {
+            throw new Error('A Regtest transaction input has already been submitted by this wallet');
+          }
+          const txid = await post();
+          for (const [key, address] of inputs) spends[key] = address ?? spends[key] ?? null;
+          await save();
+          return txid;
+        });
+      } else {
+        data = await post();
+      }
     } else {
       data = await this.httpPost<string>('/tx', rawTransaction);
     }
@@ -386,7 +503,7 @@ export class BitcoinEsploraApiProvider {
     const path = `/block-height/${height}`;
     if (this._network !== 'Regtest') return this.httpGet<string>(path);
     const hash =
-      (await this.optionalRegtestRoute<string>('blockHash', path)) ??
+      (await this.optionalRegtestRoute<string>('blockHash', path, undefined, height === 0)) ??
       (await getRegtestOrdJson<string>(this.ordApiUrl, `/r/blockhash/${height}`));
     if (!/^[0-9a-f]{64}$/i.test(hash.trim())) throw new Error('Invalid Regtest block hash');
     return hash.trim();

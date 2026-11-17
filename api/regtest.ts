@@ -18,7 +18,8 @@ export function regtestApiUrl(value: string | undefined, endpoint: 'bitcoin' | '
       throw new RegtestApiConfigurationError(endpoint);
     }
     const url = new URL(absolute);
-    const hosted = /(^|\.)(xverse\.app|mempool\.space|sbtc-mempool\.tech|hiro\.so|gamma\.io|ordinals\.com)\.?$/i;
+    const hosted =
+      /(^|\.)(xverse\.app|mempool\.space|sbtc-mempool\.tech|hiro\.so|gamma\.io|gamma\.mypinata\.cloud|ordinals\.com|unisat\.io)\.?$/i;
     if (
       (url.protocol === 'http:' || url.protocol === 'https:') &&
       !url.username &&
@@ -37,6 +38,11 @@ export function regtestApiUrl(value: string | undefined, endpoint: 'bitcoin' | '
 
 export const REGTEST_API_TIMEOUT = 5000;
 
+export const regtestTransport =
+  typeof globalThis.location === 'undefined'
+    ? { maxRedirects: 0 }
+    : { adapter: 'fetch', fetchOptions: { redirect: 'error' as const }, withCredentials: false };
+
 export function isNotFound(error: unknown): boolean {
   return axios.isAxiosError(error) && error.response?.status === 404;
 }
@@ -46,7 +52,7 @@ export async function getRegtestOrdJson<T>(ordApiUrl: string | undefined, path: 
   const { data } = await axios.get<T>(`${url}${path}`, {
     headers: { Accept: 'application/json' },
     timeout: REGTEST_API_TIMEOUT,
-    maxRedirects: 0,
+    ...regtestTransport,
   });
   return data;
 }

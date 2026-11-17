@@ -3,6 +3,7 @@ import BigNumber from 'bignumber.js';
 import EsploraApiProvider from '../api/esplora/esploraAPiProvider';
 import { OrdinalsApi } from '../api/ordinals/provider';
 import { getRegtestInscriptionContentUrl, RegtestOrdinalsApi } from './ordinals/regtest';
+import { regtestTransport } from './regtest';
 import { API_TIMEOUT_MILLI, ORDINALS_URL, XVERSE_API_BASE_URL, XVERSE_INSCRIBE_URL } from '../constant';
 import { isInscriptionsAndRunesCompatible } from '../transactions/btcNetwork';
 import {
@@ -135,7 +136,7 @@ export async function getTextOrdinalContent(
   return axios
     .get<string>(url, {
       timeout: API_TIMEOUT_MILLI,
-      ...(network === 'Regtest' ? { maxRedirects: 0 } : {}),
+      ...(network === 'Regtest' ? regtestTransport : {}),
       transformResponse: [(data) => parseOrdinalTextContentData(data)],
     })
     .then((response) => response!.data)
@@ -153,7 +154,9 @@ export async function getNonOrdinalUtxo(
   if (network === 'Regtest') {
     const ordinals = new RegtestOrdinalsApi(esploraProvider);
     const statuses = await Promise.all(unspentOutputs.map((utxo) => ordinals.getSpendStatus(utxo)));
-    return unspentOutputs.filter((_, index) => statuses[index] === 'clean');
+    const clean = unspentOutputs.filter((_, index) => statuses[index] === 'clean');
+    const available = await Promise.all(clean.map((utxo) => esploraProvider.isRegtestFundingAvailable(utxo)));
+    return clean.filter((_, index) => available[index]);
   }
 
   const nonOrdinalOutputs: Array<UTXO> = [];

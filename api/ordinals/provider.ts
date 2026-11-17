@@ -57,12 +57,7 @@ export class OrdinalsApi {
 
     while (inscriptions.results.length > 0) {
       allInscriptions.push(...inscriptions.results);
-      if (
-        limit <= 0 ||
-        inscriptions.results.length < limit ||
-        (inscriptions.total > 0 && offset + limit >= inscriptions.total)
-      )
-        break;
+      if (limit <= 0) break;
       offset += limit;
       inscriptions = await this.getInscriptions(address, offset, limit);
     }

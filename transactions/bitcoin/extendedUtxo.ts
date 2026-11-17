@@ -119,7 +119,10 @@ export class ExtendedUtxo {
   }
 
   async isRegtestFeeEligible(): Promise<boolean> {
-    return (await this._utxoCache.regtestOrdinals?.getSpendStatus(this._utxo)) === 'clean';
+    return (
+      (await this._utxoCache.regtestOrdinals?.getSpendStatus(this._utxo)) === 'clean' &&
+      this._esploraApiProvider.isRegtestFundingAvailable(this._utxo)
+    );
   }
 
   /** Returns undefined if UTXO has not yet been indexed */

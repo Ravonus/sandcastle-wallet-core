@@ -192,4 +192,66 @@ describe('Regtest Esplora', () => {
     expect(await client.getTransactionHex(txid)).toBe(raw);
     expect(await client.getTransactionOutspend(txid, 0)).toEqual({ spent: false });
   });
+  it('filters submitted outpoints across clients until their address scan drops them', async () => {
+    const base = 'http://localhost:19452';
+    const shared = new Map<string, string>();
+    const storage = {
+      get: (key: string) => shared.get(key) ?? null,
+      set: (key: string, value: string) => {
+        shared.set(key, value);
+      },
+    };
+    const client = () => BitcoinEsploraApiProvider.fromSettings({ ...settings, btcApiUrl: base }, storage);
+    const spend = new Transaction();
+    spend.addInput(parent.getHash(), 0);
+    spend.addOutput(parent.outs[0].script, 4000);
+    nock(base)
+      .get(`/address/${address}/utxo`)
+      .twice()
+      .reply(200, [utxo])
+      .post('/tx', spend.toHex())
+      .reply(200, spend.getId())
+      .get(`/address/${address}/utxo`)
+      .reply(200, [])
+      .get(`/address/${address}/utxo`)
+      .reply(200, [utxo]);
+    const sender = client();
+    expect(await sender.getUnspentUtxos(address)).toMatchObject([utxo]);
+    await sender.sendRawTransaction(spend.toHex());
+    expect(await client().getUnspentUtxos(address)).toEqual([]);
+    expect(await client().isRegtestFundingAvailable(utxo)).toBe(false);
+    expect(await client().getUnspentUtxos(address)).toEqual([]);
+    expect([...shared.values()]).toEqual(['{}']);
+    expect(await client().getUnspentUtxos(address)).toMatchObject([utxo]);
+  });
+
+  it('checks the single outspend and the 100-confirmation coinbase boundary', async () => {
+    const base = 'http://localhost:19453';
+    const client = new BitcoinEsploraApiProvider({ network: 'Regtest', url: base });
+    nock(base)
+      .get(`/tx/${txid}`)
+      .times(3)
+      .reply(200, sparse)
+      .get(`/tx/${txid}/outspend/0`)
+      .reply(200, { spent: true })
+      .get(`/tx/${txid}/outspend/0`)
+      .reply(404)
+      .get(`/tx/${txid}/outspend/0`)
+      .reply(200, { spent: false })
+      .get('/blocks/tip/height')
+      .reply(200, '658')
+      .get('/blocks/tip/height')
+      .reply(200, '659');
+    expect(await client.isRegtestFundingAvailable(utxo)).toBe(false);
+    expect(await client.isRegtestFundingAvailable(utxo)).toBe(false);
+    expect(await client.isRegtestFundingAvailable(utxo)).toBe(true);
+  });
+
+  it('does not disable the block-height route on an unknown height', async () => {
+    const base = 'http://localhost:19454';
+    const client = new BitcoinEsploraApiProvider({ network: 'Regtest', url: base });
+    nock(base).get('/block-height/99999').reply(404).get('/block-height/0').reply(200, blockHash);
+    await expect(client.getBlockHash(99999)).rejects.toBeInstanceOf(RegtestApiConfigurationError);
+    expect(await client.getBlockHash(0)).toBe(blockHash);
+  });
 });
