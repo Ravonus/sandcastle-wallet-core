@@ -150,6 +150,7 @@ export type TransactionScriptOutput = {
 export type EnhancedInput = {
   prevoutUnknown?: true;
   extendedUtxo: ExtendedUtxo | ExtendedDummyUtxo;
+  unlocatedInscriptionIds?: string[];
   inscriptions: IOInscription[];
   satributes: IOSatribute[];
   sigHash?: btc.SigHash | undefined;

@@ -251,6 +251,9 @@ export const mapInputToEnhancedInput = async (
   const bundleData = await input.getBundleData();
 
   const inscriptions = getInputInscriptions(bundleData, input.address);
+  const unlocatedInscriptionIds = bundleData?.localInscriptions?.ids.filter(
+    (id) => !inscriptions.some((inscription) => inscription.id === id),
+  );
   const satributes: IOSatribute[] =
     bundleData?.sat_ranges
       .filter((r) => r.satributes.length > 0)
@@ -265,6 +268,7 @@ export const mapInputToEnhancedInput = async (
     extendedUtxo: input,
     sigHash: sigHash,
     inscriptions,
+    ...(unlocatedInscriptionIds?.length && { unlocatedInscriptionIds }),
     satributes,
     walletWillSign,
   };

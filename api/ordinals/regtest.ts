@@ -155,39 +155,73 @@ export class RegtestOrdinalsApi {
     return holdings;
   }
 
+  async getAddressInscription(address: string, id: string): Promise<Inscription | undefined> {
+    const item = await this.getInscription(id);
+    if (item?.address === address) return item;
+    const holdings = await this.getAddressHoldings(address);
+    const holding = holdings.find(({ ids }) => ids.includes(id));
+    return holding && this.inscriptionPlaceholder(id, holding.utxo);
+  }
+
+  private inscriptionPlaceholder(id: string, utxo: UTXO): Inscription {
+    return {
+      id,
+      detailsUnavailable: true,
+      address: utxo.address ?? '',
+      output: `${utxo.txid}:${utxo.vout}`,
+      tx_id: utxo.txid,
+      value: String(utxo.value),
+      genesis_tx_id: id.slice(0, 64),
+      location: '',
+      offset: '',
+      number: 0,
+      genesis_block_height: 0,
+      genesis_fee: '',
+      genesis_timestamp: 0,
+      timestamp: 0,
+      mime_type: '',
+      content_type: '',
+      content_length: 0,
+    };
+  }
+
   async getAllInscriptions(address: string): Promise<Inscription[]> {
     const pending = this.pendingAddressReads.get(address);
     if (pending) return pending;
 
     const read = (async () => {
       const holdings = await this.getAddressHoldings(address);
-      const outpointsById = new Map<string, Set<string>>();
+      const utxosById = new Map<string, UTXO[]>();
       for (const { utxo, ids } of holdings) {
         for (const id of ids) {
-          const outpoints = outpointsById.get(id) ?? new Set<string>();
-          outpoints.add(`${utxo.txid}:${utxo.vout}`);
-          outpointsById.set(id, outpoints);
+          const utxos = utxosById.get(id) ?? [];
+          utxos.push(utxo);
+          utxosById.set(id, utxos);
         }
       }
       const items = await Promise.all(
-        [...outpointsById].map(async ([id, outpoints]) => {
+        [...utxosById].map(async ([id, utxos]) => {
           const item = await this.getInscription(id);
-          if (item?.address === address && outpoints.has(item.output)) return item;
-          return undefined;
+          if (item?.address === address && utxos.some((utxo) => item.output === `${utxo.txid}:${utxo.vout}`)) {
+            return item;
+          }
+          return this.inscriptionPlaceholder(id, utxos[0]);
         }),
       );
-      return items
-        .filter((item): item is Inscription => item !== undefined)
-        .sort(
-          (a, b) => a.output.localeCompare(b.output) || Number(a.offset) - Number(b.offset) || a.id.localeCompare(b.id),
-        );
+      return items.sort(
+        (a, b) =>
+          a.output.localeCompare(b.output) ||
+          (a.offset === '' ? Infinity : Number(a.offset)) - (b.offset === '' ? Infinity : Number(b.offset)) ||
+          a.id.localeCompare(b.id),
+      );
     })().finally(() => this.pendingAddressReads.delete(address));
     this.pendingAddressReads.set(address, read);
     return read;
   }
 
   async getInscriptions(address: string, offset = 0, limit = 60): Promise<InscriptionsList> {
-    const items = await this.getAllInscriptions(address);
+    // The standard RPC listing requires a numeric offset for every item.
+    const items = (await this.getAllInscriptions(address)).filter(({ detailsUnavailable }) => !detailsUnavailable);
     return { offset, limit, total: items.length, results: items.slice(offset, offset + limit) };
   }
 
@@ -208,12 +242,12 @@ export class RegtestOrdinalsApi {
       limit,
       total: visible.length,
       total_inscriptions: visible.length,
-      results: visible.slice(offset, offset + limit).map(({ id, number, content_type }) => ({
+      results: visible.slice(offset, offset + limit).map(({ id, number, content_type, detailsUnavailable }) => ({
         collection_id: null,
         collection_name: null,
         category: null,
         total_inscriptions: 1,
-        thumbnail_inscriptions: [{ id, number, content_type }],
+        thumbnail_inscriptions: [{ id, number, content_type, ...(detailsUnavailable && { detailsUnavailable }) }],
       })),
     };
   }

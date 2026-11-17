@@ -326,8 +326,7 @@ export class XverseApi {
 
   getInscription = async (address: string, inscriptionId: string): Promise<Inscription | undefined> => {
     if (this.regtestOrdinals) {
-      const item = await this.regtestOrdinals.getInscription(inscriptionId);
-      return item?.address === address ? item : undefined;
+      return this.regtestOrdinals.getAddressInscription(address, inscriptionId);
     }
     const response = await this.client.get(`/v1/address/${address}/ordinals/inscriptions/${inscriptionId}`);
     return response.data;

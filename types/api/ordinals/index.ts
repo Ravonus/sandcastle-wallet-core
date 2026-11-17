@@ -2,6 +2,7 @@ import { TransactionData } from '../xverse/transaction';
 
 export interface Inscription {
   id: string;
+  detailsUnavailable?: true;
   number: number;
   address: string;
   genesis_address?: string;

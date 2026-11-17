@@ -104,10 +104,10 @@ async function walletContext() {
 
 describe('Regtest ord', () => {
   it('joins current UTXOs to deduplicated inscription IDs, keeps number zero, and emits standalone collections', async () => {
-    btcRead().get(`/api/address/${payment}/utxo`).times(3).reply(200, [inscribed, inscribed]);
+    btcRead().get(`/api/address/${payment}/utxo`).times(4).reply(200, [inscribed, inscribed]);
     ordRead()
       .get(`/output/${inscribedOutpoint}`)
-      .times(3)
+      .times(4)
       .reply(200, output(inscribed.value, [second, first, first, missing]))
       .get(`/inscription/${first}`)
       .twice()
@@ -116,7 +116,7 @@ describe('Regtest ord', () => {
       .twice()
       .reply(200, inscription(8, 41))
       .get(`/inscription/${missing}`)
-      .twice()
+      .times(3)
       .reply(404);
 
     const bitcoin = provider();
@@ -153,8 +153,8 @@ describe('Regtest ord', () => {
     expect(collections).toEqual({
       offset: 0,
       limit: 1,
-      total: 2,
-      total_inscriptions: 2,
+      total: 3,
+      total_inscriptions: 3,
       results: [
         {
           collection_id: null,
@@ -168,6 +168,12 @@ describe('Regtest ord', () => {
     expect(
       await ord.getCollections(payment, 0, 5, { hiddenCollectibleIds: [first], showHiddenOnly: true }),
     ).toMatchObject({ total: 1, results: [{ thumbnail_inscriptions: [{ id: first, number: 0 }] }] });
+    expect(await ord.getAddressInscription(payment, missing)).toMatchObject({
+      id: missing,
+      output: inscribedOutpoint,
+      offset: '',
+      detailsUnavailable: true,
+    });
     expect(ord.getContentUrl(first)).toBe(`${ordOrigin}/content/${first}`);
     const joined = await fetchBtcOrdinalsData(payment, bitcoin, 'Regtest');
     expect(joined.map(({ id }) => id)).toEqual([second, first, missing]);
@@ -175,23 +181,28 @@ describe('Regtest ord', () => {
   });
 
   it('funds BTC and explicit ordinal sends only with clean fee coins', async () => {
-    btcRead().get(`/api/address/${payment}/utxo`).once().reply(200, [inscribed, unknown, spendable]);
+    btcRead().persist().get(`/api/address/${payment}/utxo`).reply(200, [inscribed, unknown, spendable]);
+    btcRead().persist().get(`/api/tx/${spendableTxid}/outspend/0`).reply(200, { spent: false });
+    btcRead().persist().get(`/api/tx/${spendableTxid}`).reply(404);
     ordRead()
       .persist()
       .get(`/output/${inscribedOutpoint}`)
       .reply(200, output(inscribed.value, [first, second]));
     ordRead().persist().get(`/output/${unknownOutpoint}`).reply(404);
     ordRead().persist().get(`/output/${cleanOutpoint}`).reply(200, output(spendable.value, []));
-    ordRead().get(`/inscription/${first}`).reply(200, inscription(0, 37));
-    ordRead().get(`/inscription/${second}`).reply(200, inscription(8, 37));
+    ordRead().persist().get(`/inscription/${first}`).reply(200, inscription(0, 37));
+    ordRead().persist().get(`/inscription/${second}`).reply(200, inscription(8, 37));
 
     const { context } = await walletContext();
     const send = await btcTransaction.sendBtc(context, [{ toAddress: recipient, amount: 1000n }], 1);
     expect((await send.getSummary()).inputs.map((input) => input.extendedUtxo.outpoint)).toEqual([cleanOutpoint]);
 
-    const ordinalSend = await btcTransaction.sendOrdinalsWithSplit(
+    await expect(
+      btcTransaction.sendOrdinalsWithSplit(context, [{ toAddress: recipient, inscriptionId: first }], 1),
+    ).rejects.toThrow('multiple inscriptions or an unknown offset');
+    const ordinalSend = await btcTransaction.sendOrdinals(
       context,
-      [{ toAddress: recipient, inscriptionId: first }],
+      [{ toAddress: recipient, outpoint: inscribedOutpoint }],
       1,
     );
     const summary = await ordinalSend.getSummary();
@@ -230,6 +241,18 @@ describe('Regtest ord', () => {
     const bundle = await utxoCache.getUtxoByOutpoint(inscribedOutpoint, payment);
     expect(bundle).toMatchObject({ sat_ranges: [], localInscriptions: { ids: [missing], located: [] } });
     expect(await utxoCache.getUtxoByOutpoint(inscribedOutpoint, payment, true)).toEqual(bundle);
+  });
+
+  it('rejects a selective split when the only held inscription has an unknown offset', async () => {
+    btcRead().get(`/api/address/${payment}/utxo`).reply(200, [inscribed]);
+    ordRead()
+      .get(`/output/${inscribedOutpoint}`)
+      .reply(200, output(inscribed.value, [missing]));
+    ordRead().get(`/inscription/${missing}`).reply(404);
+    const { context } = await walletContext();
+    await expect(
+      btcTransaction.sendOrdinalsWithSplit(context, [{ toAddress: recipient, inscriptionId: missing }], 1),
+    ).rejects.toThrow('multiple inscriptions or an unknown offset');
   });
 
   it('rejects unindexed, spent, mismatched, and unavailable outputs for funding', async () => {

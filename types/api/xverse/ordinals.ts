@@ -13,7 +13,7 @@ export interface CollectionMarketDataResponse {
   floor_change_24h?: number;
 }
 
-export type CondensedInscription = Pick<Inscription, 'id' | 'content_type' | 'number'>;
+export type CondensedInscription = Pick<Inscription, 'id' | 'content_type' | 'number' | 'detailsUnavailable'>;
 
 export interface InscriptionCollectionsData {
   collection_id: string | null;

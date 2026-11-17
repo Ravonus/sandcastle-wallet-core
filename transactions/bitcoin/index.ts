@@ -195,6 +195,8 @@ export const sendOrdinals = async (
   return transaction;
 };
 
+export class InscriptionSplitError extends Error {}
+
 /**
  * Sends specific inscriptions or sats to specific recipients
  * If the UTXO has more sats on it than dust before or after the specified sats to send, then it
@@ -243,6 +245,12 @@ export const sendOrdinalsWithSplit = async (
       }
 
       const bundle = await utxo.extendedUtxo.getBundleData();
+      const local = bundle?.localInscriptions;
+      if (local && (local.ids.length > 1 || local.ids.some((id) => !local.located.some((item) => item.id === id)))) {
+        throw new InscriptionSplitError(
+          'Cannot split this inscription: the output contains multiple inscriptions or an unknown offset. Send the whole output instead.',
+        );
+      }
 
       const offset =
         bundle?.localInscriptions?.located.find((item) => item.id === recipient.inscriptionId)?.offset ??
