@@ -8,7 +8,7 @@ import { getRunesClient } from '../../api';
 import { UTXO } from '../../types';
 import { RegtestApiConfigurationError } from '../../api/regtest';
 import { getBtcNetworkDefinition, isInscriptionsAndRunesCompatible } from '../btcNetwork';
-import { InputToSign, TransactionContext } from './context';
+import { assertAllowedPsbtSighash, InputToSign, P2trAddressContext, TransactionContext } from './context';
 import { ExtendedDummyUtxo, ExtendedUtxo } from './extendedUtxo';
 import {
   EnhancedInput,
@@ -191,12 +191,13 @@ export class EnhancedPsbt {
     inputTxid: string,
     knownEmptyTxids?: string[],
   ) => {
-    const prevoutAmount = inputRaw.witnessUtxo?.amount ?? inputRaw.nonWitnessUtxo?.outputs[inputRaw.index!]?.amount;
+    const prevout = inputRaw.witnessUtxo ?? inputRaw.nonWitnessUtxo?.outputs[inputRaw.index!];
+    const prevoutAmount = prevout?.amount;
     if (!knownEmptyTxids?.includes(inputTxid)) {
       const outpoint = `${inputTxid}:${inputRaw.index}`;
       if (this._context.network === 'Regtest') {
         // The local transaction and outspend endpoints can check an external input directly.
-        const utxo = await this._context.paymentAddress.getExternalUtxo(outpoint).catch((error) => {
+        const utxo = await this._context.paymentAddress.getExternalUtxo(outpoint, prevout?.script).catch((error) => {
           if (error instanceof RegtestApiConfigurationError) throw error;
           return undefined;
         });
@@ -282,6 +283,15 @@ export class EnhancedPsbt {
 
   async getSummary(options?: GetPSBTSummaryOptions): Promise<PsbtSummary> {
     const transaction = this.parseTransaction();
+    for (const descriptor of this._inputsToSign ?? []) {
+      const defaultSighash =
+        descriptor.address === this._context.ordinalsAddress.address && this._context.ordinalsAddress.type === 'p2tr'
+          ? btc.SigHash.DEFAULT
+          : btc.SigHash.ALL;
+      for (const index of descriptor.signingIndexes) {
+        assertAllowedPsbtSighash(descriptor, transaction.getInput(index).sighashType ?? defaultSighash, index);
+      }
+    }
 
     const { inputs, inputTotal, isSigHashAll, hasSigHashNone, hasSigHashSingle } = await this._extractInputMetadata(
       transaction,
@@ -420,7 +430,35 @@ export class EnhancedPsbt {
     };
   }
 
+  assertCanFinalize(): void {
+    if (this._context.network !== 'Regtest') return;
+
+    const tx = this.parseTransaction();
+    const signer = this._context.ordinalsAddress;
+    for (let index = 0; index < tx.inputsLength; index++) {
+      const input = tx.getInput(index);
+      const leaves = input.tapLeafScript ?? [];
+      const prevout = input.witnessUtxo ?? input.nonWitnessUtxo?.outputs[input.index!];
+      const witness = input.finalScriptWitness ?? [];
+      const witnessLength = witness.at(-1)?.[0] === 0x50 ? witness.length - 1 : witness.length;
+      const finalizedLeaf =
+        witnessLength >= 2 && prevout && btc.OutScript.decode(prevout.script).type === 'tr'
+          ? witness[witnessLength - 2]
+          : undefined;
+      if (!leaves.length && !input.tapScriptSig?.length && !finalizedLeaf) continue;
+
+      const script = finalizedLeaf ?? (leaves.length === 1 ? leaves[0][1].subarray(0, -1) : undefined);
+      const walletSigns = this._inputsToSignMap?.[index]?.some(({ address }) => address === signer.address);
+      if (!script || !(signer instanceof P2trAddressContext) || !signer.canFinalizeTapLeaf(script) || !walletSigns) {
+        throw new Error(
+          `Cannot finalize or broadcast tapscript input ${index}: use sign-only and have the requesting app finalize it.`,
+        );
+      }
+    }
+  }
+
   async getSignedPsbtBase64(options: PSBTCompilationOptions = {}): Promise<string> {
+    if (options.finalize) this.assertCanFinalize();
     if (
       this._context.network === 'Regtest' &&
       !options.finalize &&

@@ -317,6 +317,35 @@ describe('Regtest marketplace PSBTs', () => {
     expect(versionCoder.encode(after)).toEqual(original);
   });
 
+  it('leaves co-signed sale leaves to the requesting app to finalize', async () => {
+    const context = await wallet();
+    const unsigned = protectedListing(saleScript);
+    unsigned.signIdx(serverKey, 0, [single]);
+    const inputs = selector(context.ordinalsAddress.address, [0], single);
+    const psbt = new EnhancedPsbt(context, base64.encode(unsigned.toPSBT()), inputs);
+    await expect(psbt.getSignedPsbtBase64({ finalize: true })).rejects.toThrow('use sign-only');
+    const signed = decodePsbt(await psbt.getSignedPsbtBase64());
+    expect(signed.getInput(0).tapScriptSig).toHaveLength(2);
+    expect(signed.isFinal).toBe(false);
+    const external = new EnhancedPsbt(context, base64.encode(signed.toPSBT()), []);
+    await expect(external.getSignedPsbtBase64({ finalize: true })).rejects.toThrow('use sign-only');
+  });
+
+  it('enforces the legacy sighash and intersects it with the array restriction', async () => {
+    const context = await wallet();
+    const encoded = base64.encode(listing().toPSBT());
+    const descriptor = { address: context.ordinalsAddress.address, signingIndexes: [0] };
+    const legacyConflict = new EnhancedPsbt(context, encoded, [{ ...descriptor, sigHash: all }]);
+    await expect(legacyConflict.getSummary()).rejects.toThrow('Sighash 131 is not allowed');
+    await expect(legacyConflict.getSignedPsbtBase64()).rejects.toThrow('Sighash 131 is not allowed');
+    const intersection = new EnhancedPsbt(context, encoded, [{ ...descriptor, sigHash: single, sighashTypes: [all] }]);
+    await expect(intersection.getSignedPsbtBase64()).rejects.toThrow('Sighash 131 is not allowed');
+    const allowed = new EnhancedPsbt(context, encoded, [
+      { ...descriptor, sigHash: single, sighashTypes: [single, all] },
+    ]);
+    expect(decodePsbt(await allowed.getSignedPsbtBase64()).getInput(0).tapKeySig?.[64]).toBe(single);
+  });
+
   it('rejects disallowed sighash, wrong role, duplicate indexes, and a mismatched control block', async () => {
     const context = await wallet();
     const unsigned = listing();

@@ -31,6 +31,15 @@ export type InputToSign = {
   sighashTypes?: number[];
 };
 
+export function assertAllowedPsbtSighash(descriptor: InputToSign, effectiveSighash: number, index: number): void {
+  const { sigHash, sighashTypes } = descriptor;
+  const allowed =
+    sigHash === undefined ? sighashTypes : [sigHash].filter((value) => !sighashTypes || sighashTypes.includes(value));
+  if (allowed && !allowed.includes(effectiveSighash)) {
+    throw new Error(`Sighash ${effectiveSighash} is not allowed for PSBT input ${index}`);
+  }
+}
+
 export type SignOptions = {
   ledgerTransport?: LedgerTransport;
   keystoneTransport?: KeystoneTransport;
@@ -95,7 +104,7 @@ export abstract class AddressContext {
   async getUtxos(): Promise<ExtendedUtxo[]> {
     const release = await this._getUtxoMutex.acquire();
     try {
-      if (!this._utxos) {
+      if (!this._utxos || this._network === 'Regtest') {
         const utxos = await this._esploraApiProvider.getUnspentUtxos(this._address);
 
         this._utxos = utxos.map(
@@ -150,7 +159,7 @@ export abstract class AddressContext {
   }
 
   // helper method to get an extended UTXO for another address
-  async getExternalUtxo(outPoint: string): Promise<ExtendedUtxo | undefined> {
+  async getExternalUtxo(outPoint: string, expectedScript?: Uint8Array): Promise<ExtendedUtxo | undefined> {
     const [txid, vout] = outPoint.split(':');
     const tx = await this._esploraApiProvider.getTransaction(txid).catch((e) => {
       if (
@@ -167,7 +176,7 @@ export abstract class AddressContext {
     }
 
     const output = tx.vout[+vout];
-    if (!output) return undefined;
+    if (!output || (expectedScript && output.scriptpubkey !== hex.encode(expectedScript))) return undefined;
 
     const outspend =
       this._network === 'Regtest'
@@ -228,9 +237,7 @@ export abstract class AddressContext {
             const input = transaction.getInput(index);
             const effectiveSighash =
               input.sighashType ?? (this.type === 'p2tr' ? btc.SigHash.DEFAULT : btc.SigHash.ALL);
-            if (inputToSign.sighashTypes && !inputToSign.sighashTypes.includes(effectiveSighash)) {
-              throw new Error(`Sighash ${effectiveSighash} is not allowed for PSBT input ${index}`);
-            }
+            assertAllowedPsbtSighash(inputToSign, effectiveSighash, index);
             signIndexes[index] = [effectiveSighash];
           });
         }
@@ -661,6 +668,10 @@ export class P2trAddressContext extends AddressContext {
     } finally {
       if (!input.tapInternalKey) transaction.updateInput(index, { tapInternalKey: undefined }, true);
     }
+  }
+
+  canFinalizeTapLeaf(script: Uint8Array): boolean {
+    return areByteArraysEqual(script, btc.p2tr_pk(this._p2tr.tapInternalKey).script);
   }
 
   private checkRegtestTapLeaf(input: TransactionInput, prevoutScript: Uint8Array): Uint8Array {
